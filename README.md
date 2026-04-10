@@ -228,6 +228,11 @@ npm run test:integration
 npm run test:all
 ```
 
+## Repository
+
+- Homepage: https://github.com/ganesh-rao/prisma-sqlmodel-gen
+- Issues: https://github.com/ganesh-rao/prisma-sqlmodel-gen/issues
+
 ## Security
 
 Run `npm audit` before release. At the time of the initial public release, there are unresolved upstream advisories in transitive dependencies used by `@mrleebo/prisma-ast`, and npm audit currently suggests semver-incompatible Prisma downgrades for some advisories. See [SECURITY.md](./SECURITY.md) for the current project stance.
@@ -251,4 +256,3 @@ Internal source layout:
 
 - This generator currently emits table models only.
 - It does not emit `Create`, `Update`, or `Read` DTO classes.
-- `package.json` repository URLs are intentionally not guessed. Add `repository`, `homepage`, and `bugs` fields before publishing from your canonical repo.

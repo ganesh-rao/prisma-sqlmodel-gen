@@ -13,6 +13,14 @@
     "postgresql",
     "mysql"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ganesh-rao/prisma-sqlmodel-gen.git"
+  },
+  "homepage": "https://github.com/ganesh-rao/prisma-sqlmodel-gen#readme",
+  "bugs": {
+    "url": "https://github.com/ganesh-rao/prisma-sqlmodel-gen/issues"
+  },
   "main": "./dist/cli.cjs",
   "module": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
