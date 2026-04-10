@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON_DOWNLOADS: automatic
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python runtimes
+        run: uv python install 3.11 3.12
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Coverage
+        run: npm run test:coverage
+
+      - name: Integration tests
+        run: npm run test:integration
