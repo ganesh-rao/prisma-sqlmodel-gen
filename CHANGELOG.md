@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.2
+
+- normalize the published npm `bin` path to avoid npm auto-correct removing the executable entry during publish
+
 ## 0.1.1
 
 - fixed package executable routing so `provider = "prisma-sqlmodel-gen"` works directly with `prisma generate`
