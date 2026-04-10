@@ -963,9 +963,22 @@ describe("normalize and render branches", () => {
 
 describe("version resolution", () => {
   it("uses the installed package version when available and falls back otherwise", () => {
-    expect(resolvePackageVersion(() => ({ version: "9.9.9" }))).toBe("9.9.9");
-    expect(resolvePackageVersion(() => ({ version: "   " }))).toBe("0.0.0");
-    expect(resolvePackageVersion(() => {
+    const originalInjectedVersion = process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION;
+
+    try {
+      process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION = "1.2.3";
+      expect(resolvePackageVersion()).toBe("1.2.3");
+    } finally {
+      if (originalInjectedVersion === undefined) {
+        delete process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION;
+      } else {
+        process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION = originalInjectedVersion;
+      }
+    }
+
+    expect(resolvePackageVersion("   ", () => ({ version: "9.9.9" }))).toBe("9.9.9");
+    expect(resolvePackageVersion(undefined, () => ({ version: "   " }))).toBe("0.0.0");
+    expect(resolvePackageVersion(undefined, () => {
       throw new Error("boom");
     })).toBe("0.0.0");
   });

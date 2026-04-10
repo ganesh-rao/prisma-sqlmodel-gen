@@ -12,7 +12,7 @@ export default defineConfig({
     generator: "src/generator.ts"
   },
   define: {
-    __PACKAGE_VERSION__: JSON.stringify(packageJson.version)
+    "process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION": JSON.stringify(packageJson.version)
   },
   format: ["esm", "cjs"],
   sourcemap: true,

@@ -1,15 +1,18 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-declare const __PACKAGE_VERSION__: string | undefined;
+function getInjectedPackageVersion(): string | undefined {
+  return process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION;
+}
 
 export function resolvePackageVersion(
+  injectedVersion: string | undefined = getInjectedPackageVersion(),
   readPackageJson: () => unknown = () =>
     JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version?: unknown }
 ): string {
   try {
-    if (typeof __PACKAGE_VERSION__ === "string" && __PACKAGE_VERSION__.trim().length > 0) {
-      return __PACKAGE_VERSION__;
+    if (typeof injectedVersion === "string" && injectedVersion.trim().length > 0) {
+      return injectedVersion;
     }
 
     const packageJson = readPackageJson() as { version?: unknown };

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.4
+
+- fix the GitHub Actions coverage path for package version injection so CI retains 100% statement, line, and branch coverage
+- switch build-time version injection to an environment slot that is directly testable under Vitest while preserving the generated header behavior
+
 ## 0.1.3
 
 - fix generated file headers so the emitted `Package version` matches the installed package version instead of a stale hardcoded value
