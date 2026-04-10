@@ -1,5 +1,8 @@
 # prisma-sqlmodel-gen
 
+[![npm version](https://img.shields.io/npm/v/prisma-sqlmodel-gen)](https://www.npmjs.com/package/prisma-sqlmodel-gen)
+[![CI](https://github.com/ganesh-rao/prisma-sqlmodel-gen/actions/workflows/ci.yml/badge.svg)](https://github.com/ganesh-rao/prisma-sqlmodel-gen/actions/workflows/ci.yml)
+
 Generate Python `SQLModel` table models from a Prisma schema.
 
 ## What it does
@@ -15,6 +18,10 @@ Install:
 ```bash
 npm install -D prisma-sqlmodel-gen
 ```
+
+npm package:
+
+- https://www.npmjs.com/package/prisma-sqlmodel-gen
 
 Add a generator block to `schema.prisma`:
 
