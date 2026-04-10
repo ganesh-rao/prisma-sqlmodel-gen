@@ -1,6 +1,6 @@
 {
   "name": "prisma-sqlmodel-gen",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generate SQLModel table models from a Prisma schema",
   "license": "MIT",
   "type": "module",
@@ -21,17 +21,36 @@
   "bugs": {
     "url": "https://github.com/ganesh-rao/prisma-sqlmodel-gen/issues"
   },
-  "main": "./dist/cli.cjs",
-  "module": "./dist/cli.js",
-  "types": "./dist/cli.d.ts",
+  "main": "./dist/generator.cjs",
+  "module": "./dist/generator.js",
+  "types": "./dist/generator.d.ts",
   "bin": {
-    "prisma-sqlmodel-gen": "./dist/cli.js"
+    "prisma-sqlmodel-gen": "./dist/bin.js"
   },
   "exports": {
     ".": {
+      "types": "./dist/generator.d.ts",
+      "import": "./dist/generator.js",
+      "require": "./dist/generator.cjs",
+      "default": "./dist/generator.js"
+    },
+    "./cli": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js",
+      "require": "./dist/cli.cjs",
       "default": "./dist/cli.js"
+    },
+    "./bin": {
+      "types": "./dist/bin.d.ts",
+      "import": "./dist/bin.js",
+      "require": "./dist/bin.cjs",
+      "default": "./dist/bin.js"
+    },
+    "./generator": {
+      "types": "./dist/generator.d.ts",
+      "import": "./dist/generator.js",
+      "require": "./dist/generator.cjs",
+      "default": "./dist/generator.js"
     }
   },
   "files": [

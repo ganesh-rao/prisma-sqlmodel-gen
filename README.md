@@ -252,6 +252,7 @@ Run `npm audit` before release. At the time of the initial public release, there
 
 Internal source layout:
 
+- `src/bin.ts` package executable that routes Prisma generator invocations to the generator entrypoint and manual commands to the standalone CLI
 - `src/generator.ts` Prisma generator entrypoint
 - `src/cli.ts` standalone CLI
 - `src/ir/*` normalized schema IR exports

@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -332,6 +333,55 @@ describe("generateSqlModel", () => {
     await writeFile(path.join(outputDir, "models.py"), "# stale\n", "utf8");
     await expect(checkSqlModelGeneration(input)).rejects.toThrow("Generated output is stale or missing");
   });
+
+  it(
+    "works with provider = prisma-sqlmodel-gen via a packed local install",
+    async () => {
+      const repoRoot = process.cwd();
+      const packDir = await mkdtemp(path.join(os.tmpdir(), "prisma-sqlmodel-pack-"));
+      const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "prisma-sqlmodel-workspace-"));
+
+      execFileSync("npm", ["run", "build"], {
+        cwd: repoRoot,
+        stdio: "ignore"
+      });
+
+      const packedJson = execFileSync(
+        "npm",
+        ["pack", "--json", "--pack-destination", packDir],
+        {
+          cwd: repoRoot,
+          encoding: "utf8"
+        }
+      );
+      const [{ filename }] = JSON.parse(packedJson) as Array<{ filename: string }>;
+      const tarballPath = path.join(packDir, filename);
+
+      const schemaPath = path.join(workspaceDir, "schema.prisma");
+      await writeFile(schemaPath, postgresSchema, "utf8");
+
+      execFileSync("npm", ["init", "-y"], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+      execFileSync("npm", ["install", "--no-package-lock", "prisma@^7.7.0", tarballPath], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+      execFileSync("npx", ["prisma", "generate", "--schema", schemaPath], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+
+      const rendered = await readFile(
+        path.join(workspaceDir, "generated", "sqlmodel", "models.py"),
+        "utf8"
+      );
+      expect(rendered).toContain("class User(SQLModel, table=True):");
+      expect(rendered).toContain("__tablename__ = 'users'");
+    },
+    30_000
+  );
 });
 
 async function buildInput(datamodel: string, outputDir: string) {

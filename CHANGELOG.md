@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.1
+
+- fixed package executable routing so `provider = "prisma-sqlmodel-gen"` works directly with `prisma generate`
+- added a packed-install regression test to prevent the CLI entrypoint from being invoked as the Prisma generator
+
 ## 0.1.0
 
 - Initial public release of `prisma-sqlmodel-gen`
