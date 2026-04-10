@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.3
+
+- fix generated file headers so the emitted `Package version` matches the installed package version instead of a stale hardcoded value
+- normalize golden snapshots and add regression coverage for version resolution and packed-install header output
+- add a GitHub Actions publish workflow for npm Trusted Publishing via GitHub Releases
+
 ## 0.1.2
 
 - normalize the published npm `bin` path to avoid npm auto-correct removing the executable entry during publish

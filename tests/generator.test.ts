@@ -7,6 +7,7 @@ import { getDMMF } from "@prisma/internals";
 import { resolveGeneratorConfig } from "../src/config.js";
 import { formatDiagnostics } from "../src/diagnostics.js";
 import { checkSqlModelGeneration, generateSqlModel } from "../src/generate.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 
 const postgresSchema = `datasource db {
   provider = "postgresql"
@@ -222,7 +223,7 @@ describe("generateSqlModel", () => {
     await generateSqlModel(await buildInput(postgresSchema, outputDir));
 
     const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
-    expect(rendered).toContain("# Package version: 0.1.0");
+    expect(rendered).toContain(`# Package version: ${PACKAGE_VERSION}`);
     expect(rendered).toContain("# Schema hash:");
     expect(rendered).toContain("class User(SQLModel, table=True):");
     expect(rendered).toContain("__tablename__ = 'users'");
@@ -377,8 +378,12 @@ describe("generateSqlModel", () => {
         path.join(workspaceDir, "generated", "sqlmodel", "models.py"),
         "utf8"
       );
+      const installedPackage = JSON.parse(
+        await readFile(path.join(workspaceDir, "node_modules", "prisma-sqlmodel-gen", "package.json"), "utf8")
+      ) as { version: string };
       expect(rendered).toContain("class User(SQLModel, table=True):");
       expect(rendered).toContain("__tablename__ = 'users'");
+      expect(rendered).toContain(`# Package version: ${installedPackage.version}`);
     },
     30_000
   );

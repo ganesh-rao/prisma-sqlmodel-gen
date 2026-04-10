@@ -15,7 +15,7 @@ import { buildSchemaDefinition } from "../src/normalize.js";
 import { extractAstMetadata } from "../src/prisma-ast.js";
 import { renderPythonModule } from "../src/render-python.js";
 import * as utils from "../src/utils.js";
-import { PACKAGE_VERSION } from "../src/version.js";
+import { PACKAGE_VERSION, resolvePackageVersion } from "../src/version.js";
 
 describe("utility modules", () => {
   it("covers config resolution branches", () => {
@@ -951,13 +951,23 @@ describe("normalize and render branches", () => {
     expect(postgresRendered).toContain("class Bare(SQLModel, table=True):\n    __tablename__ = 'bare'\n    pass");
     expect(postgresRendered).toContain("# Prisma model '123Bad' emitted as Python class '_23Bad'.");
 
-    expect(mysqlRendered).toContain("# Package version: 0.1.0");
+    expect(mysqlRendered).toContain(`# Package version: ${PACKAGE_VERSION}`);
     expect(mysqlRendered).toContain("from sqlalchemy.dialects.mysql import");
     expect(mysqlRendered).toContain("TINYTEXT()");
     expect(mysqlRendered).toContain("MEDIUMINT(unsigned=True)");
     expect(mysqlRendered).toContain("INTEGER(unsigned=True)");
     expect(mysqlRendered).toContain("LONGBLOB()");
     expect(mysqlRendered).toContain("GEOMETRY(1)");
+  });
+});
+
+describe("version resolution", () => {
+  it("uses the installed package version when available and falls back otherwise", () => {
+    expect(resolvePackageVersion(() => ({ version: "9.9.9" }))).toBe("9.9.9");
+    expect(resolvePackageVersion(() => ({ version: "   " }))).toBe("0.0.0");
+    expect(resolvePackageVersion(() => {
+      throw new Error("boom");
+    })).toBe("0.0.0");
   });
 });
 
