@@ -1242,6 +1242,9 @@ model User {
     } as any;
 
     await generateSqlModel(input);
+    await expect(checkSqlModelGeneration(input)).resolves.toMatchObject({
+      files: [path.join(outputDir, "models.py")]
+    });
     await writeFile(path.join(outputDir, "__init__.py"), "stale\n", "utf8");
     await expect(checkSqlModelGeneration(input)).rejects.toThrow("__init__.py");
 

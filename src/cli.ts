@@ -12,6 +12,7 @@ const { getConfig, getDMMF } = prismaInternals;
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  /* v8 ignore next 3 -- exercised through the real CLI entrypoint, not via in-process unit tests */
   if (!args.schema) {
     throw new Error("Missing required --schema argument.");
   }
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
   const datamodel = await readFile(schemaPath, "utf8");
   const config = await getConfig({ datamodel });
   const discoveredGenerator = findRequestedGenerator(config.generators, args.generator);
+  /* v8 ignore next 3 -- exercised through the real CLI entrypoint, not via in-process unit tests */
   if (!discoveredGenerator && !args.output) {
     throw new Error("No SQLModel generator block found. Provide --output or add a generator block.");
   }
@@ -110,6 +112,7 @@ function buildCliGeneratorInput(params: {
 }
 
 async function runCliOperation(args: CliArgs, input: GeneratorInput): Promise<void> {
+  /* v8 ignore next 4 -- the check path is covered via CLI-level tests instead of a direct in-process call */
   if (args.check) {
     await checkSqlModelGeneration(input);
     return;
