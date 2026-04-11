@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.6
+
+- fix npm Trusted Publishing metadata by normalizing `package.json` `repository.url` to the exact GitHub repository URL expected by npm
+- update the GitHub release publish workflow to use a modern Node runtime compatible with npm's current trusted publishing requirements
+- retain the existing release verification flow, including full test, build, and integration validation before publish
+
 ## 0.1.5
 
 - merge the Dependabot Vitest 4 upgrade after reconciling the paired `vitest` and `@vitest/coverage-v8` updates into one green PR
