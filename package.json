@@ -1,6 +1,6 @@
 {
   "name": "prisma-sqlmodel-gen",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Generate SQLModel table models from a Prisma schema",
   "license": "MIT",
   "type": "module",

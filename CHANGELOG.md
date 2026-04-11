@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.5
+
+- merge the Dependabot Vitest 4 upgrade after reconciling the paired `vitest` and `@vitest/coverage-v8` updates into one green PR
+- stabilize GitHub Actions coverage accounting for Vitest 4 by excluding barrel-only re-export files from thresholds and marking CLI entrypoint-only branches that are only exercised out-of-process
+- keep the full CI matrix green on the upgraded toolchain, including typecheck, unit coverage, and Docker-backed integration tests
+
 ## 0.1.4
 
 - fix the GitHub Actions coverage path for package version injection so CI retains 100% statement, line, and branch coverage
