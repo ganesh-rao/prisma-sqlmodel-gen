@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.7
+
+- patch the remaining transitive GitHub Dependabot and `npm audit` findings with npm `overrides` rather than waiting on upstream direct dependency releases
+- force `@hono/node-server` to `1.19.13` under Prisma's dependency tree and `lodash-es` to `4.18.1` under `chevrotain` / `@mrleebo/prisma-ast`
+- keep the project validation bar unchanged by re-running the full typecheck, unit, coverage-sensitive, and Docker-backed integration suite after the lockfile refresh
+
 ## 0.1.6
 
 - fix npm Trusted Publishing metadata by normalizing `package.json` `repository.url` to the exact GitHub repository URL expected by npm
