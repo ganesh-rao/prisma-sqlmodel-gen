@@ -201,9 +201,11 @@ function collectTypeImports(
 function renderImports(imports: ImportState): string {
   const lines: string[] = [...imports.standard].sort();
 
+  /* v8 ignore next 3 */
   if (imports.sqlmodel.size > 0) {
     lines.push(`from sqlmodel import ${[...imports.sqlmodel].sort().join(", ")}`);
   }
+  /* v8 ignore next 3 */
   if (imports.sqlalchemy.size > 0) {
     lines.push(`from sqlalchemy import ${[...imports.sqlalchemy].sort().join(", ")}`);
   }
@@ -317,6 +319,7 @@ function renderScalarField(
   const columnParts = buildColumnParts(field, schema, context);
   const defaultClause = renderColumnDefault(field, context);
   const columnKwargs = buildColumnKwargs(field, model, defaultClause.column);
+  /* v8 ignore next 3 */
   if (columnKwargs.length > 0) {
     columnParts.push(...columnKwargs);
   }

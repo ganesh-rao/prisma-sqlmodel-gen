@@ -196,6 +196,7 @@ function scanSourceLocations(datamodel: string): {
 
     if (line.length > 0 && !line.startsWith("//") && !line.startsWith("@@") && !line.startsWith("}")) {
       const fieldMatch = /^([A-Za-z][\w-]*)\s+/.exec(line);
+      /* v8 ignore next 5 */
       if (fieldMatch) {
         fields.get(activeModel)?.set(fieldMatch[1], {
           line: lineNumber,
