@@ -137,6 +137,155 @@ model Category {
   children Category[] @relation("CategoryTree")
 }`;
 
+const multiSchemaSchema = `datasource db {
+  provider = "postgresql"
+  schemas  = ["public", "tenant_a"]
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id    Int    @id @default(autoincrement())
+  posts Post[]
+
+  @@map("users")
+  @@schema("tenant_a")
+}
+
+model Post {
+  id       Int   @id @default(autoincrement())
+  authorId Int   @map("author_id")
+  author   User  @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "posts_author_fk")
+
+  @@schema("tenant_a")
+}`;
+
+const compositeRelationSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model Parent {
+  leftId  Int
+  rightId Int
+  kids    Child[]
+
+  @@id([leftId, rightId])
+}
+
+model Child {
+  id          Int    @id @default(autoincrement())
+  parentLeft  Int
+  parentRight Int
+  parent      Parent @relation(fields: [parentLeft, parentRight], references: [leftId, rightId], onDelete: Cascade, onUpdate: Restrict, map: "child_parent_fk")
+}`;
+
+const postgresListsSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+model User {
+  id        Int        @id @default(autoincrement())
+  tags      String[]
+  scores    Int[]
+  active    Boolean[]
+  roles     Role[]
+  seenAt    DateTime[]
+}`;
+
+const mysqlIndexOptionsSchema = `datasource db {
+  provider = "mysql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @db.VarChar(255)
+  slug  String @db.VarChar(255)
+
+  @@index([email(length: 10), slug(sort: Desc)], map: "user_lookup_idx")
+}`;
+
+const updatedAtSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model Event {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  touchedAt  DateTime @default(now()) @updatedAt
+}`;
+
+const relationModeSchema = `datasource db {
+  provider     = "postgresql"
+  relationMode = "prisma"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id Int @id @default(autoincrement())
+}`;
+
+const ignoreFieldSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id       Int    @id @default(autoincrement())
+  hidden   String @ignore
+}`;
+
+const ignoreModelSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id       Int    @id @default(autoincrement())
+
+  @@ignore
+}`;
+
 const sanitizationSchema = `datasource db {
   provider = "postgresql"
 }
@@ -211,6 +360,38 @@ model User {
   from_  String @db.VarChar(50)
 }`;
 
+const advancedIndexSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value(ops: raw("gin_trgm_ops"))], type: Gin)
+}`;
+
+const expressionIndexSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([raw("lower(value)")])
+}`;
+
 let tempDir: string;
 
 beforeAll(async () => {
@@ -231,7 +412,7 @@ describe("generateSqlModel", () => {
     expect(rendered).toContain("displayName: str | None = Field(sa_column=Column('display_name', VARCHAR(120), nullable=True), default=None)");
     expect(rendered).toContain("authorId: int = Field(sa_column=Column('author_id', Integer(), ForeignKey('users.id'), nullable=False))");
     expect(rendered).toContain("createdAt: datetime | None = Field(sa_column=Column(TIMESTAMP(precision=6, timezone=True), nullable=False, server_default=func.now()), default=None)");
-    expect(rendered).toContain("role: Role = Field(sa_column=Column(SAEnum(Role, name='role'), nullable=False), default=Role.USER)");
+    expect(rendered).toContain("role: Role = Field(sa_column=Column(SAEnum(Role, name='Role'), nullable=False), default=Role.USER)");
     expect(rendered).toContain("__table_args__ = (Index('posts_author_id_idx', 'author_id'),)");
     expect(rendered).toContain("profile: Optional['Profile'] = Relationship(back_populates='user', sa_relationship_kwargs={\"foreign_keys\": 'Profile.userId'})");
   });
@@ -281,6 +462,54 @@ describe("generateSqlModel", () => {
     expect(rendered).toContain("children: list['Category'] = Relationship(back_populates='parent', sa_relationship_kwargs={\"foreign_keys\": 'Category.parentId'})");
   });
 
+  it("renders PostgreSQL schema-qualified tables and foreign keys", async () => {
+    const outputDir = path.join(tempDir, "multi-schema");
+    await generateSqlModel(await buildInput(multiSchemaSchema, outputDir));
+
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("__tablename__ = 'users'");
+    expect(rendered).toContain("__table_args__ = ({\"schema\": 'tenant_a'},)");
+    expect(rendered).toContain("ForeignKey('tenant_a.users.id', name='posts_author_fk', ondelete='Cascade', onupdate='Restrict')");
+  });
+
+  it("renders composite foreign keys with referential actions in table args", async () => {
+    const outputDir = path.join(tempDir, "composite-rel");
+    await generateSqlModel(await buildInput(compositeRelationSchema, outputDir));
+
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("ForeignKeyConstraint(['parentLeft', 'parentRight'], ['Parent.leftId', 'Parent.rightId'], name='child_parent_fk', ondelete='Cascade', onupdate='Restrict')");
+    expect(rendered).not.toContain("ForeignKey('Parent.leftId'");
+  });
+
+  it("renders PostgreSQL scalar and enum lists as ARRAY columns", async () => {
+    const outputDir = path.join(tempDir, "pg-lists");
+    await generateSqlModel(await buildInput(postgresListsSchema, outputDir));
+
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("from sqlalchemy.dialects.postgresql import ARRAY");
+    expect(rendered).toContain("tags: list[str] = Field(sa_column=Column(ARRAY(String()), nullable=False))");
+    expect(rendered).toContain("scores: list[int] = Field(sa_column=Column(ARRAY(Integer()), nullable=False))");
+    expect(rendered).toContain("roles: list[Role] = Field(sa_column=Column(ARRAY(SAEnum(Role, name='Role')), nullable=False))");
+  });
+
+  it("renders MySQL index length and sort modifiers", async () => {
+    const outputDir = path.join(tempDir, "mysql-index-options");
+    await generateSqlModel(await buildInput(mysqlIndexOptionsSchema, outputDir));
+
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("from sqlalchemy import Column, Index, Integer, desc");
+    expect(rendered).toContain("__table_args__ = (Index('user_lookup_idx', 'email', desc('slug'), mysql_length={'email': 10}),)");
+  });
+
+  it("renders updatedAt columns with ORM onupdate semantics", async () => {
+    const outputDir = path.join(tempDir, "updated-at");
+    await generateSqlModel(await buildInput(updatedAtSchema, outputDir));
+
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("updatedAt: datetime = Field(sa_column=Column(DateTime(), nullable=False, onupdate=func.now()))");
+    expect(rendered).toContain("touchedAt: datetime | None = Field(sa_column=Column(DateTime(), nullable=False, server_default=func.now(), onupdate=func.now()), default=None)");
+  });
+
   it("sanitizes Python keywords in generated field names", async () => {
     const outputDir = path.join(tempDir, "sanitized");
     await generateSqlModel(await buildInput(sanitizationSchema, outputDir));
@@ -290,22 +519,17 @@ describe("generateSqlModel", () => {
     expect(rendered).toContain("from_: str = Field(sa_column=Column(VARCHAR(50), nullable=False))");
   });
 
-  it("fails on implicit many-to-many relations with actionable diagnostics", async () => {
+  it("renders implicit many-to-many relations through synthesized link models", async () => {
     const outputDir = path.join(tempDir, "implicit");
+    await generateSqlModel(await buildInput(implicitManySchema, outputDir));
 
-    await expect(generateSqlModel(await buildInput(implicitManySchema, outputDir))).rejects.toMatchObject({
-      name: "DiagnosticError"
-    });
-
-    try {
-      await generateSqlModel(await buildInput(implicitManySchema, outputDir));
-    } catch (error) {
-      const diagnostics = (error as { diagnostics: Parameters<typeof formatDiagnostics>[0] }).diagnostics;
-      const formatted = formatDiagnostics(diagnostics);
-      expect(formatted).toContain("UNSUPPORTED_IMPLICIT_MANY_TO_MANY");
-      expect(formatted).toContain("line");
-      expect(formatted).toContain("Suggestion:");
-    }
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("class PrismaImplicitLink__PostToTag(SQLModel, table=True):");
+    expect(rendered).toContain("__tablename__ = '_PostToTag'");
+    expect(rendered).toContain("A: int = Field(sa_column=Column(Integer(), ForeignKey('Post.id'), nullable=False))");
+    expect(rendered).toContain("B: int = Field(sa_column=Column(Integer(), ForeignKey('Tag.id'), nullable=False))");
+    expect(rendered).toContain("tags: list['Tag'] = Relationship(back_populates='posts', link_model=PrismaImplicitLink__PostToTag)");
+    expect(rendered).toContain("posts: list['Post'] = Relationship(back_populates='tags', link_model=PrismaImplicitLink__PostToTag)");
   });
 
   it("fails on unsupported client-side defaults", async () => {
@@ -327,12 +551,68 @@ describe("generateSqlModel", () => {
     );
   });
 
+  it("fails on unsupported relationMode = prisma", async () => {
+    const outputDir = path.join(tempDir, "relation-mode");
+    await expect(generateSqlModel(await buildInput(relationModeSchema, outputDir))).rejects.toThrow(
+      "Schema contains unsupported constructs."
+    );
+  });
+
+  it("fails on @ignore", async () => {
+    const outputDir = path.join(tempDir, "ignore-field");
+    await expect(generateSqlModel(await buildInput(ignoreFieldSchema, outputDir))).rejects.toThrow(
+      "Schema contains unsupported constructs."
+    );
+  });
+
+  it("fails on @@ignore", async () => {
+    const outputDir = path.join(tempDir, "ignore-model");
+    await expect(generateSqlModel(await buildInput(ignoreModelSchema, outputDir))).rejects.toThrow(
+      "Schema contains unsupported constructs."
+    );
+  });
+
   it("detects stale generated output in --check mode", async () => {
     const outputDir = path.join(tempDir, "stale-check");
     const input = await buildInput(postgresSchema, outputDir);
     await generateSqlModel(input);
     await writeFile(path.join(outputDir, "models.py"), "# stale\n", "utf8");
     await expect(checkSqlModelGeneration(input)).rejects.toThrow("Generated output is stale or missing");
+  });
+
+  it("fails on advanced Prisma index algorithms and operator classes", async () => {
+    const outputDir = path.join(tempDir, "advanced-index");
+    await expect(generateSqlModel(await buildInput(advancedIndexSchema, outputDir))).rejects.toThrow(
+      "Schema contains unsupported constructs."
+    );
+  });
+
+  it("fails on expression-style index definitions discovered from the Prisma AST", async () => {
+    const outputDir = path.join(tempDir, "expression-index");
+    const dmmf = {
+      datamodel: {
+        indexes: [],
+        enums: [],
+        models: [
+          {
+            name: "User",
+            fields: [
+              { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+              { kind: "scalar", name: "value", type: "String", isList: false, isRequired: true, isId: false, isUnique: false, hasDefaultValue: false, nativeType: ["VarChar", ["255"]] }
+            ]
+          }
+        ]
+      }
+    };
+    await expect(
+      generateSqlModel({
+        dmmf,
+        schemaPath: "/virtual/schema.prisma",
+        datamodel: expressionIndexSchema,
+        outputDir,
+        config: resolveGeneratorConfig(undefined)
+      } as any)
+    ).rejects.toThrow("Schema contains unsupported constructs.");
   });
 
   it(

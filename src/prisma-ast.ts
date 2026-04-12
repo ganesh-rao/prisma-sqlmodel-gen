@@ -1,6 +1,6 @@
 import { getSchema, type Block, type PrismaParser } from "@mrleebo/prisma-ast";
 import { PrismaParser as PrismaAstParser } from "@mrleebo/prisma-ast";
-import type { ConstraintDefinition, SupportedProvider } from "./types.js";
+import type { Diagnostic, SupportedProvider } from "./types.js";
 import { normalizeStringLiteral } from "./utils.js";
 
 type SourceLocation = {
@@ -8,18 +8,26 @@ type SourceLocation = {
   column: number;
 };
 
+type RelationMetadata = {
+  map?: string;
+};
+
 type ModelMetadata = {
   tableName: string;
-  constraints: ConstraintDefinition[];
-  fieldConstraintNames: Map<string, string>;
+  tableSchema?: string;
+  ignored: boolean;
   fieldLocations: Map<string, SourceLocation>;
+  ignoredFields: Set<string>;
+  relationFields: Map<string, RelationMetadata>;
 };
 
 export type AstMetadata = {
   provider: SupportedProvider;
+  relationMode?: string;
   models: Map<string, ModelMetadata>;
   modelLocations: Map<string, SourceLocation>;
   fieldLocations: Map<string, Map<string, SourceLocation>>;
+  unsupportedDiagnostics: Diagnostic[];
 };
 
 export function extractAstMetadata(datamodel: string, dmmf: any): AstMetadata {
@@ -27,34 +35,50 @@ export function extractAstMetadata(datamodel: string, dmmf: any): AstMetadata {
     parser: new PrismaAstParser({ nodeLocationTracking: "full" }) as PrismaParser
   } as any);
   const provider = extractProvider(schema);
+  const relationMode = extractDatasourceSetting(schema, "relationMode");
   const scannedLocations = scanSourceLocations(datamodel);
   const astModels = new Map<string, ModelMetadata>();
   const modelLocations = new Map<string, SourceLocation>();
   const fieldLocations = new Map<string, Map<string, SourceLocation>>();
+  const unsupportedDiagnostics: Diagnostic[] = [];
 
-  for (const model of dmmf.datamodel.models) {
-    const block = findModelBlock(schema, model.name);
-    const scannedModelLocation = scannedLocations.models.get(model.name);
-    const scannedFieldLocations = scannedLocations.fields.get(model.name) ?? new Map<string, SourceLocation>();
+  const dmmfModelByName = new Map<string, any>(dmmf.datamodel.models.map((model: any) => [model.name, model]));
+  const modelNames = new Set<string>([
+    ...dmmf.datamodel.models.map((model: any) => model.name),
+    ...schema.list
+      .filter((entry): entry is Extract<Block, { type: "model" }> => entry.type === "model")
+      .map((entry) => entry.name)
+  ]);
 
-    astModels.set(model.name, {
-      tableName: findModelTableName(block) ?? model.dbName ?? model.name,
-      constraints: block ? extractModelConstraints(block) : [],
-      fieldConstraintNames: block ? extractFieldConstraintNames(block) : new Map(),
-      fieldLocations: scannedFieldLocations
+  for (const modelName of modelNames) {
+    const model = dmmfModelByName.get(modelName);
+    const block = findModelBlock(schema, modelName);
+    const scannedModelLocation = scannedLocations.models.get(modelName);
+    const scannedFieldLocations = scannedLocations.fields.get(modelName) ?? new Map<string, SourceLocation>();
+
+    astModels.set(modelName, {
+      tableName: findModelTableName(block) ?? model?.dbName ?? modelName,
+      tableSchema: findModelSchema(block) ?? model?.schema ?? undefined,
+      ignored: hasModelAttribute(block, "ignore"),
+      fieldLocations: scannedFieldLocations,
+      ignoredFields: extractIgnoredFields(block),
+      relationFields: extractRelationFieldMetadata(block)
     });
+    unsupportedDiagnostics.push(...extractUnsupportedIndexDiagnostics(block, modelName, scannedModelLocation, scannedFieldLocations));
 
     if (scannedModelLocation) {
-      modelLocations.set(model.name, scannedModelLocation);
+      modelLocations.set(modelName, scannedModelLocation);
     }
-    fieldLocations.set(model.name, scannedFieldLocations);
+    fieldLocations.set(modelName, scannedFieldLocations);
   }
 
   return {
     provider,
+    relationMode,
     models: astModels,
     modelLocations,
-    fieldLocations
+    fieldLocations,
+    unsupportedDiagnostics
   };
 }
 
@@ -68,14 +92,7 @@ function findModelBlock(
 }
 
 function extractProvider(schema: ReturnType<typeof getSchema>): SupportedProvider {
-  const datasource = schema.list.find(
-    (entry): entry is Extract<Block, { type: "datasource" }> => entry.type === "datasource"
-  );
-  const providerAssignment = datasource?.assignments.find(
-    (assignment): assignment is Extract<typeof datasource.assignments[number], { type: "assignment" }> =>
-      assignment.type === "assignment" && assignment.key === "provider"
-  );
-  const provider = normalizeStringLiteral(providerAssignment?.value);
+  const provider = extractDatasourceSetting(schema, "provider");
 
   if (provider === "postgresql" || provider === "mysql") {
     return provider;
@@ -86,81 +103,192 @@ function extractProvider(schema: ReturnType<typeof getSchema>): SupportedProvide
   );
 }
 
-function findModelTableName(block?: Extract<Block, { type: "model" }>): string | undefined {
-  const mapAttribute = block?.properties.find(
-    (property) => property.type === "attribute" && property.kind === "object" && property.name === "map"
+function extractDatasourceSetting(
+  schema: ReturnType<typeof getSchema>,
+  key: string
+): string | undefined {
+  const datasource = schema.list.find(
+    (entry): entry is Extract<Block, { type: "datasource" }> => entry.type === "datasource"
   );
-  const mapValue = mapAttribute && "args" in mapAttribute ? mapAttribute.args?.[0]?.value : undefined;
-  return normalizeStringLiteral(mapValue);
+  const assignment = datasource?.assignments.find(
+    (candidate): candidate is Extract<typeof datasource.assignments[number], { type: "assignment" }> =>
+      candidate.type === "assignment" && candidate.key === key
+  );
+  return normalizeStringLiteral(assignment?.value);
 }
 
-function extractModelConstraints(block: Extract<Block, { type: "model" }>): ConstraintDefinition[] {
-  const constraints: ConstraintDefinition[] = [];
-
-  for (const property of block.properties) {
-    if (property.type !== "attribute" || property.kind !== "object") {
-      continue;
-    }
-
-    if (property.name !== "id" && property.name !== "unique" && property.name !== "index") {
-      continue;
-    }
-
-    const fieldsArg = property.args?.find((arg) => !isKeyValueAttributeArgument(arg.value));
-    if (!fieldsArg || !isArrayValue(fieldsArg.value)) {
-      continue;
-    }
-
-    const fields = fieldsArg.value.args.flatMap((value) => (typeof value === "string" ? [value] : []));
-    constraints.push({
-      kind: property.name === "id" ? "primary_key" : property.name,
-      fields,
-      name: extractConstraintName(property)
-    });
-  }
-
-  return constraints;
+function findModelTableName(block?: Extract<Block, { type: "model" }>): string | undefined {
+  return extractModelAttributeString(block, "map");
 }
 
-function extractFieldConstraintNames(block: Extract<Block, { type: "model" }>): Map<string, string> {
-  const names = new Map<string, string>();
+function findModelSchema(block?: Extract<Block, { type: "model" }>): string | undefined {
+  return extractModelAttributeString(block, "schema");
+}
 
-  for (const property of block.properties) {
+function extractModelAttributeString(
+  block: Extract<Block, { type: "model" }> | undefined,
+  attributeName: string
+): string | undefined {
+  const attribute = block?.properties.find(
+    (property) => property.type === "attribute" && property.kind === "object" && property.name === attributeName
+  );
+  const value = attribute && "args" in attribute ? attribute.args?.[0]?.value : undefined;
+  return normalizeStringLiteral(value);
+}
+
+function hasModelAttribute(block: Extract<Block, { type: "model" }> | undefined, attributeName: string): boolean {
+  return Boolean(
+    block?.properties.find(
+      (property) => property.type === "attribute" && property.kind === "object" && property.name === attributeName
+    )
+  );
+}
+
+function extractIgnoredFields(block: Extract<Block, { type: "model" }> | undefined): Set<string> {
+  const ignored = new Set<string>();
+  for (const property of block?.properties ?? []) {
     if (property.type !== "field") {
       continue;
     }
 
-    for (const attribute of property.attributes ?? []) {
-      if (attribute.type !== "attribute" || attribute.kind !== "field" || attribute.name !== "unique") {
+    if (property.attributes?.some((attribute) => attribute.type === "attribute" && attribute.name === "ignore")) {
+      ignored.add(property.name);
+    }
+  }
+
+  return ignored;
+}
+
+function extractRelationFieldMetadata(
+  block: Extract<Block, { type: "model" }> | undefined
+): Map<string, RelationMetadata> {
+  const metadata = new Map<string, RelationMetadata>();
+
+  for (const property of block?.properties ?? []) {
+    if (property.type !== "field") {
+      continue;
+    }
+
+    const relationAttribute = property.attributes?.find(
+      (attribute) => attribute.type === "attribute" && attribute.kind === "field" && attribute.name === "relation"
+    );
+    if (!relationAttribute) {
+      continue;
+    }
+
+    const mapArg = relationAttribute.args?.find(
+      (arg) =>
+        isKeyValueAttributeArgument(arg.value) &&
+        arg.value.key === "map"
+    );
+
+    metadata.set(property.name, {
+      map: mapArg && isKeyValueAttributeArgument(mapArg.value) ? normalizeStringLiteral(mapArg.value.value) : undefined
+    });
+  }
+
+  return metadata;
+}
+
+function extractUnsupportedIndexDiagnostics(
+  block: Extract<Block, { type: "model" }> | undefined,
+  modelName: string,
+  modelLocation: SourceLocation | undefined,
+  fieldLocations: Map<string, SourceLocation>
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  for (const property of block?.properties ?? []) {
+    if (property.type !== "attribute" || property.kind !== "object") {
+      continue;
+    }
+
+    if (property.name !== "index" && property.name !== "unique") {
+      continue;
+    }
+
+    const typeArg = property.args?.find(
+      (arg) => isKeyValueAttributeArgument(arg.value) && arg.value.key === "type"
+    );
+    const typeValue = typeArg?.value;
+    const indexType = isKeyValueAttributeArgument(typeValue)
+      ? normalizeStringLiteral(typeValue.value) ?? String(typeValue.value)
+      : undefined;
+
+    if (indexType) {
+      diagnostics.push({
+        code: "UNSUPPORTED_ADVANCED_INDEX",
+        severity: "error",
+        model: modelName,
+        location: modelLocation,
+        message: `Prisma index type '${indexType}' does not map 1:1 to generated SQLModel metadata in strict mode.`,
+        suggestion: "Use Prisma's default index behavior or manage the advanced index manually in migrations."
+      });
+    }
+
+    const fieldsArg = property.args?.find((arg) => isArrayAttributeArgument(arg.value));
+    const fieldEntries = fieldsArg && isArrayAttributeArgument(fieldsArg.value) ? fieldsArg.value.args : [];
+    for (const entry of fieldEntries) {
+      if (typeof entry === "string") {
         continue;
       }
 
-      const name = extractConstraintName(attribute);
-      if (name) {
-        names.set(property.name, name);
+      if (!isFunctionAttributeArgument(entry)) {
+        diagnostics.push({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          severity: "error",
+          model: modelName,
+          location: modelLocation,
+          message: "Non-field index expressions cannot be emitted 1:1 to SQLModel metadata.",
+          suggestion: "Use plain field indexes in generated models and keep expression indexes in migrations."
+        });
+        continue;
+      }
+
+      for (const param of entry.params ?? []) {
+        if (!isKeyValueAttributeArgument(param)) {
+          diagnostics.push({
+            code: "UNSUPPORTED_ADVANCED_INDEX",
+            severity: "error",
+            model: modelName,
+            field: entry.name,
+            location: fieldLocations.get(entry.name) ?? modelLocation,
+            message: "Unsupported index field modifiers cannot be emitted 1:1 to SQLModel metadata.",
+            suggestion: "Use only supported sort/length modifiers or manage the advanced index manually in migrations."
+          });
+          continue;
+        }
+
+        if (param.key === "sort" || param.key === "length") {
+          continue;
+        }
+
+        diagnostics.push({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          severity: "error",
+          model: modelName,
+          field: entry.name,
+          location: fieldLocations.get(entry.name) ?? modelLocation,
+          message: `Prisma index field modifier '${param.key}' does not map 1:1 to generated SQLModel metadata.`,
+          suggestion: "Use only supported sort/length modifiers or manage the advanced index manually in migrations."
+        });
       }
     }
   }
 
-  return names;
-}
-
-function extractConstraintName(attribute: { args?: Array<{ value: unknown }> }): string | undefined {
-  const namedArg = attribute.args?.find(
-    (arg: { value: unknown }) =>
-      isKeyValueAttributeArgument(arg.value) && (arg.value.key === "map" || arg.value.key === "name")
-  );
-  return namedArg && isKeyValueAttributeArgument(namedArg.value)
-    ? normalizeStringLiteral(namedArg.value.value)
-    : undefined;
+  return diagnostics;
 }
 
 function isKeyValueAttributeArgument(value: unknown): value is { type: "keyValue"; key: string; value: unknown } {
   return typeof value === "object" && value !== null && "type" in value && value.type === "keyValue";
 }
 
-function isArrayValue(value: unknown): value is { type: "array"; args: unknown[] } {
+function isArrayAttributeArgument(value: unknown): value is { type: "array"; args: unknown[] } {
   return typeof value === "object" && value !== null && "type" in value && value.type === "array";
+}
+
+function isFunctionAttributeArgument(value: unknown): value is { type: "function"; name: string; params?: unknown[] } {
+  return typeof value === "object" && value !== null && "type" in value && value.type === "function";
 }
 
 function scanSourceLocations(datamodel: string): {

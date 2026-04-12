@@ -17,6 +17,27 @@ import { renderPythonModule } from "../src/render-python.js";
 import * as utils from "../src/utils.js";
 import { PACKAGE_VERSION, resolvePackageVersion } from "../src/version.js";
 
+function makeModelMetadata(
+  overrides: Partial<{
+    tableName: string;
+    tableSchema: string | undefined;
+    ignored: boolean;
+    ignoredFields: Set<string>;
+    relationFields: Map<string, any>;
+    fieldLocations: Map<string, { line: number; column: number }>;
+  }> = {}
+) {
+  return {
+    tableName: "DefaultTable",
+    tableSchema: undefined,
+    ignored: false,
+    ignoredFields: new Set<string>(),
+    relationFields: new Map<string, any>(),
+    fieldLocations: new Map<string, { line: number; column: number }>(),
+    ...overrides
+  };
+}
+
 describe("utility modules", () => {
   it("covers config resolution branches", () => {
     expect(
@@ -204,6 +225,13 @@ describe("compatibility diagnostics", () => {
   it("covers remaining compatibility branches", () => {
     const dmmf = {
       datamodel: {
+        indexes: [
+          {
+            model: "Model",
+            type: "id",
+            fields: [{ name: "idPart" }, { name: "other" }]
+          }
+        ],
         models: [
           {
             name: "Model",
@@ -244,27 +272,25 @@ describe("compatibility diagnostics", () => {
       models: new Map([
         [
           "Model",
-          {
+          makeModelMetadata({
+            ignoredFields: new Set(["hidden"]),
             tableName: "Model",
-            constraints: [{ kind: "primary_key", fields: ["idPart", "other"] }],
-            fieldConstraintNames: new Map(),
             fieldLocations: new Map([
+              ["hidden", { line: 0, column: 1 }],
               ["values", { line: 1, column: 1 }],
               ["roles", { line: 2, column: 1 }],
               ["unsupported", { line: 3, column: 1 }],
               ["identifier", { line: 4, column: 1 }],
               ["from_", { line: 5, column: 1 }]
             ])
-          }
+          })
         ],
         [
           "class",
-          {
+          makeModelMetadata({
             tableName: "class",
-            constraints: [],
-            fieldConstraintNames: new Map(),
             fieldLocations: new Map()
-          }
+          })
         ]
       ]),
       modelLocations: new Map([["Model", { line: 10, column: 2 }]]),
@@ -288,9 +314,11 @@ describe("compatibility diagnostics", () => {
       expect.arrayContaining([
         "UNSUPPORTED_LIST_FIELD",
         "UNSUPPORTED_ENUM_LIST",
+        "UNSUPPORTED_LIST_FIELD",
         "UNSUPPORTED_SCALAR_TYPE",
         "UNSUPPORTED_CLIENT_SIDE_DEFAULT",
         "UNSUPPORTED_COMPOSITE_PK_DEFAULT",
+        "UNSUPPORTED_IGNORE",
         "PYTHON_TYPE_NAME_COLLISION",
         "PYTHON_ENUM_VALUE_COLLISION",
         "PYTHON_FIELD_NAME_COLLISION"
@@ -304,6 +332,7 @@ describe("compatibility diagnostics", () => {
   it("covers unsupported provider, implicit many-to-many, and model collision branches", () => {
     const dmmf = {
       datamodel: {
+        indexes: [],
         models: [
           { name: "class", fields: [] },
           { name: "class_", fields: [] },
@@ -394,16 +423,14 @@ describe("compatibility diagnostics", () => {
     const metadata = {
       provider: "sqlite",
       models: new Map([
-        ["class", { tableName: "class", constraints: [], fieldConstraintNames: new Map(), fieldLocations: new Map() }],
-        ["class_", { tableName: "class_", constraints: [], fieldConstraintNames: new Map(), fieldLocations: new Map() }],
+        ["class", makeModelMetadata({ tableName: "class", fieldLocations: new Map() })],
+        ["class_", makeModelMetadata({ tableName: "class_", fieldLocations: new Map() })],
         [
           "GhostHolder",
-          {
+          makeModelMetadata({
             tableName: "ghost_holder",
-            constraints: [],
-            fieldConstraintNames: new Map(),
             fieldLocations: new Map([["ghosts", { line: 5, column: 3 }]])
-          }
+          })
         ]
       ]),
       modelLocations: new Map(),
@@ -430,8 +457,77 @@ describe("compatibility diagnostics", () => {
     expect(diagnostics.map((entry) => entry.code)).toEqual(
       expect.arrayContaining([
         "UNSUPPORTED_PROVIDER",
-        "UNSUPPORTED_IMPLICIT_MANY_TO_MANY",
+        "UNSUPPORTED_IMPLICIT_M2M_SHAPE",
         "PYTHON_TYPE_NAME_COLLISION"
+      ])
+    );
+  });
+
+  it("covers advanced index diagnostics from DMMF and AST metadata", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value(ops: raw("gin_trgm_ops"))], type: Gin)
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    const diagnostics = compatibility.collectCompatibilityDiagnostics(
+      {
+        datamodel: {
+          indexes: [
+            { model: "User", type: "id", fields: [{ name: "id" }] },
+            {
+              model: "User",
+              type: "normal",
+              algorithm: "Gin",
+              fields: [{ name: "value", operatorClass: "gin_trgm_ops" }]
+            },
+            {
+              model: "User",
+              type: "normal",
+              fields: [{ name: "missingLocationField", operatorClass: "text_ops" }]
+            },
+            {
+              model: "User",
+              type: "normal"
+            }
+          ],
+          models: [
+            {
+              name: "User",
+              fields: [
+                { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+                { kind: "scalar", name: "value", type: "String", isList: false, isRequired: true, isId: false, isUnique: false, hasDefaultValue: false }
+              ]
+            }
+          ],
+          enums: []
+        }
+      },
+      metadata,
+      true
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User" }),
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", field: "value" }),
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          field: "missingLocationField",
+          location: metadata.modelLocations.get("User")
+        })
       ])
     );
   });
@@ -444,22 +540,15 @@ describe("normalize and render branches", () => {
       models: new Map([
         [
           "Example",
-          {
-            tableName: "examples",
-            constraints: [
-              { kind: "index", fields: ["field"], name: "idx_one" },
-              { kind: "index", fields: ["field"], name: "idx_one" }
-            ],
-            fieldConstraintNames: new Map([["namedUnique", "named_unique"]])
-          }
+          makeModelMetadata({
+            tableName: "examples"
+          })
         ],
         [
           "Child",
-          {
-            tableName: "ChildTable",
-            constraints: [],
-            fieldConstraintNames: new Map()
-          }
+          makeModelMetadata({
+            tableName: "ChildTable"
+          })
         ]
       ]),
       modelLocations: new Map(),
@@ -471,6 +560,10 @@ describe("normalize and render branches", () => {
 
     const dmmf = {
       datamodel: {
+        indexes: [
+          { model: "Example", type: "index", fields: [{ name: "field" }], dbName: "idx_one" },
+          { model: "Example", type: "index", fields: [{ name: "field" }], dbName: "idx_one" }
+        ],
         enums: [{ name: "ThingKind", values: [{ name: "A-B", dbName: "A_B_DB" }] }],
         models: [
           {
@@ -515,9 +608,9 @@ describe("normalize and render branches", () => {
     const metadata = {
       provider: "postgresql",
       models: new Map([
-        ["Example", { tableName: "examples", constraints: [], fieldConstraintNames: new Map() }],
-        ["Child", { tableName: "children", constraints: [], fieldConstraintNames: new Map() }],
-        ["Broken", { tableName: "broken", constraints: [], fieldConstraintNames: new Map() }]
+        ["Example", makeModelMetadata({ tableName: "examples" })],
+        ["Child", makeModelMetadata({ tableName: "children" })],
+        ["Broken", makeModelMetadata({ tableName: "broken" })]
       ]),
       modelLocations: new Map(),
       fieldLocations: new Map([
@@ -529,6 +622,7 @@ describe("normalize and render branches", () => {
 
     const dmmf = {
       datamodel: {
+        indexes: [],
         enums: [],
         models: [
           {
@@ -766,9 +860,11 @@ describe("normalize and render branches", () => {
             { kind: "scalar", name: "geometryField", pythonName: "geometryField", columnName: "geometryField", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, nativeType: { name: "Geometry", args: ["1"] } },
             { kind: "scalar", name: "fallbackConstraint", pythonName: "fallbackConstraint", columnName: "fallbackConstraint", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
             { kind: "scalar", name: "foreignId", pythonName: "foreignId", columnName: "foreign_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, foreignKey: { targetModel: "Target", targetField: "mappedId" } },
-            { kind: "scalar", name: "fallbackForeign", pythonName: "fallbackForeign", columnName: "fallbackForeign", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, foreignKey: { targetModel: "MissingTarget", targetField: "id" } }
+            { kind: "scalar", name: "fallbackForeign", pythonName: "fallbackForeign", columnName: "fallbackForeign", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, foreignKey: { targetModel: "MissingTarget", targetField: "id" } },
+            { kind: "scalar", name: "legacyForeignId", pythonName: "legacyForeignId", columnName: "legacy_foreign_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, foreignKey: { field: "legacyForeignId", targetModel: "Target", targetField: "mappedId" } }
           ],
-          relationFields: []
+          relationFields: [],
+          foreignKeys: [{ fields: ["ghostLocalA", "ghostLocalB"], targetModel: "Target", targetFields: ["mappedId", "mappedId"] }]
         },
         {
           name: "Source",
@@ -780,6 +876,7 @@ describe("normalize and render branches", () => {
             { kind: "scalar", name: "compositeA", pythonName: "compositeA", columnName: "composite_a", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
             { kind: "scalar", name: "compositeB", pythonName: "compositeB", columnName: "composite_b", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
           ],
+          foreignKeys: [],
           relationFields: [
             { kind: "relation", name: "owners", pythonName: "owners", targetModel: "Owner", isList: true, isNullable: false, relationName: "Ownership", relationFromFields: [], relationToFields: [], backPopulates: "missingOwners", foreignKeyFieldNames: [] },
             { kind: "relation", name: "fallbacks", pythonName: "fallbacks", targetModel: "FallbackOwner", isList: true, isNullable: false, relationName: "FallbackLink", relationFromFields: [], relationToFields: [], backPopulates: "missingFallbacks", foreignKeyFieldNames: [] },
@@ -796,6 +893,7 @@ describe("normalize and render branches", () => {
             { kind: "scalar", name: "id", pythonName: "id", columnName: "id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: true, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
             { kind: "scalar", name: "sourceId", pythonName: "sourceId", columnName: "source_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
           ],
+          foreignKeys: [],
           relationFields: [
             { kind: "relation", name: "sourceLink", pythonName: "sourceLink", targetModel: "Source", isList: false, isNullable: false, relationName: "Ownership", relationFromFields: ["sourceId"], relationToFields: ["id"], backPopulates: "owners", foreignKeyFieldNames: ["sourceId"] },
             { kind: "relation", name: "compositeSource", pythonName: "compositeSource", targetModel: "Source", isList: false, isNullable: false, relationName: "CompositeOwnership", relationFromFields: ["sourceId", "id"], relationToFields: ["compositeA", "compositeB"], backPopulates: "unusedComposite", foreignKeyFieldNames: ["sourceId", "id"] }
@@ -810,6 +908,7 @@ describe("normalize and render branches", () => {
             { kind: "scalar", name: "id", pythonName: "id", columnName: "id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: true, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
             { kind: "scalar", name: "sourceId", pythonName: "sourceId", columnName: "source_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
           ],
+          foreignKeys: [],
           relationFields: [
             { kind: "relation", name: "otherSide", pythonName: "otherSide", targetModel: "Source", isList: false, isNullable: false, relationName: "SomethingElse", relationFromFields: ["sourceId"], relationToFields: ["id"], backPopulates: "fallbacks", foreignKeyFieldNames: ["sourceId"] }
           ]
@@ -819,6 +918,7 @@ describe("normalize and render branches", () => {
           pythonName: "Orphan",
           tableName: "orphans",
           constraints: [],
+          foreignKeys: [],
           scalarFields: [{ kind: "scalar", name: "id", pythonName: "id", columnName: "id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: true, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }],
           relationFields: [{ kind: "relation", name: "other", pythonName: "other", targetModel: "Source", isList: false, isNullable: false, relationName: "OrphanLink", relationFromFields: [], relationToFields: [], backPopulates: "notOrphans", foreignKeyFieldNames: [] }]
         },
@@ -830,6 +930,7 @@ describe("normalize and render branches", () => {
           scalarFields: [
             { kind: "scalar", name: "mappedId", pythonName: "mappedId", columnName: "mapped_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: true, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
           ],
+          foreignKeys: [],
           relationFields: []
         },
         {
@@ -837,6 +938,7 @@ describe("normalize and render branches", () => {
           pythonName: "Bare",
           tableName: "bare",
           constraints: [],
+          foreignKeys: [],
           scalarFields: [],
           relationFields: []
         },
@@ -849,6 +951,7 @@ describe("normalize and render branches", () => {
             { kind: "scalar", name: "leftId", pythonName: "leftId", columnName: "left_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
             { kind: "scalar", name: "rightId", pythonName: "rightId", columnName: "right_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
           ],
+          foreignKeys: [],
           relationFields: [
             { kind: "relation", name: "pair", pythonName: "pair", targetModel: "Node", isList: false, isNullable: false, relationName: "NodePair", relationFromFields: ["leftId", "rightId"], relationToFields: ["leftId", "rightId"], backPopulates: "pairBack", foreignKeyFieldNames: ["leftId", "rightId"] },
             { kind: "relation", name: "pairBack", pythonName: "pairBack", targetModel: "Node", isList: true, isNullable: false, relationName: "NodePair", relationFromFields: [], relationToFields: [], backPopulates: "pair", foreignKeyFieldNames: [] }
@@ -941,6 +1044,8 @@ describe("normalize and render branches", () => {
     expect(postgresRendered).toContain("default=False");
     expect(postgresRendered).toContain("MissingTarget.id");
     expect(postgresRendered).toContain("targets.mapped_id");
+    expect(postgresRendered).toContain("legacy_foreign_id', Integer(), ForeignKey('targets.mapped_id'), nullable=False");
+    expect(postgresRendered).toContain("ForeignKeyConstraint(['ghostLocalA', 'ghostLocalB'], ['targets.mapped_id', 'targets.mapped_id'])");
     expect(postgresRendered).toContain("UniqueConstraint('missingConstraintField', name='uq_missing')");
     expect(postgresRendered).toContain("owners: list['Owner'] = Relationship(back_populates='missingOwners', sa_relationship_kwargs={\"foreign_keys\": 'Owner.sourceId'})");
     expect(postgresRendered).toContain("fallbacks: list['FallbackOwner'] = Relationship(back_populates='missingFallbacks', sa_relationship_kwargs={\"foreign_keys\": 'FallbackOwner.sourceId'})");
@@ -958,6 +1063,402 @@ describe("normalize and render branches", () => {
     expect(mysqlRendered).toContain("INTEGER(unsigned=True)");
     expect(mysqlRendered).toContain("LONGBLOB()");
     expect(mysqlRendered).toContain("GEOMETRY(1)");
+  });
+
+  it("covers new implicit many-to-many, enum schema, and native-type expansion branches", () => {
+    const compatibilityMetadata = {
+      provider: "postgresql",
+      models: new Map([
+        [
+          "User",
+          makeModelMetadata({
+            tableName: "users",
+            fieldLocations: new Map([["friends", { line: 4, column: 3 }]])
+          })
+        ]
+      ]),
+      modelLocations: new Map(),
+      fieldLocations: new Map([
+        [
+          "User",
+          new Map([["friends", { line: 4, column: 3 }]])
+        ]
+      ])
+    } as any;
+
+    const selfImplicitDmmf = {
+      datamodel: {
+        indexes: [{ model: "User", type: "id", fields: [{ name: "id" }] }],
+        enums: [],
+        models: [
+          {
+            name: "User",
+            fields: [
+              { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+              { kind: "object", name: "friends", type: "User", isList: true, relationName: "FriendLinks", relationFromFields: [], relationToFields: [] },
+              { kind: "object", name: "friendedBy", type: "User", isList: true, relationName: "FriendLinks", relationFromFields: [], relationToFields: [] }
+            ]
+          }
+        ]
+      }
+    };
+
+    expect(compatibility.collectCompatibilityDiagnostics(selfImplicitDmmf, compatibilityMetadata, true)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_IMPLICIT_M2M_SHAPE",
+          field: "friends"
+        })
+      ])
+    );
+
+    const customImplicitMetadata = {
+      provider: "postgresql",
+      relationMode: "foreignKeys",
+      models: new Map([
+        ["Post", makeModelMetadata({ tableName: "Post" })],
+        ["Tag", makeModelMetadata({ tableName: "Tag" })]
+      ]),
+      modelLocations: new Map(),
+      fieldLocations: new Map([
+        ["Post", new Map()],
+        ["Tag", new Map()]
+      ])
+    } as any;
+
+    const customImplicitDmmf = {
+      datamodel: {
+        indexes: [
+          { model: "Post", type: "id", fields: [{ name: "id" }] },
+          { model: "Tag", type: "id", fields: [{ name: "id" }] }
+        ],
+        enums: [],
+        models: [
+          {
+            name: "Post",
+            fields: [
+              { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+              { kind: "object", name: "customTags", type: "Tag", isList: true, isRequired: true, relationName: "CustomLink", relationFromFields: [], relationToFields: [] }
+            ]
+          },
+          {
+            name: "Tag",
+            fields: [
+              { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+              { kind: "object", name: "customPosts", type: "Post", isList: true, isRequired: true, relationName: "CustomLink", relationFromFields: [], relationToFields: [] }
+            ]
+          }
+        ]
+      }
+    };
+
+    const customImplicitDefinition = buildSchemaDefinition(customImplicitDmmf, customImplicitMetadata);
+    expect(customImplicitDefinition.models.find((model) => model.isGeneratedLinkModel)?.tableName).toBe("_CustomLink");
+
+    const selfImplicitDefinition = buildSchemaDefinition(selfImplicitDmmf, compatibilityMetadata);
+    expect(selfImplicitDefinition.models.find((model) => model.isGeneratedLinkModel)?.tableName).toBe("_FriendLinks");
+
+    const reorderedImplicitDefinition = buildSchemaDefinition(
+      {
+        datamodel: {
+          indexes: [
+            { model: "Zebra", type: "id", fields: [{ name: "id" }] },
+            { model: "Alpha", type: "id", fields: [{ name: "id" }] }
+          ],
+          enums: [],
+          models: [
+            {
+              name: "Zebra",
+              fields: [
+                { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+                { kind: "object", name: "alphas", type: "Alpha", isList: true, isRequired: true, relationName: "AlphabetSoup", relationFromFields: [], relationToFields: [] }
+              ]
+            },
+            {
+              name: "Alpha",
+              fields: [
+                { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+                { kind: "object", name: "zebras", type: "Zebra", isList: true, isRequired: true, relationName: "AlphabetSoup", relationFromFields: [], relationToFields: [] }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        provider: "postgresql",
+        relationMode: "foreignKeys",
+        models: new Map([
+          ["Zebra", makeModelMetadata({ tableName: "Zebra" })],
+          ["Alpha", makeModelMetadata({ tableName: "Alpha" })]
+        ]),
+        modelLocations: new Map(),
+        fieldLocations: new Map([
+          ["Zebra", new Map()],
+          ["Alpha", new Map()]
+        ])
+      } as any
+    );
+    expect(reorderedImplicitDefinition.models.find((model) => model.isGeneratedLinkModel)?.tableName).toBe("_AlphabetSoup");
+
+    const invalidImplicitDmmf = {
+      datamodel: {
+        indexes: [],
+        enums: [],
+        models: [
+          {
+            name: "A",
+            fields: [
+              { kind: "object", name: "bs", type: "B", isList: true, isRequired: true, relationName: "ABLinks", relationFromFields: [], relationToFields: [] }
+            ]
+          },
+          {
+            name: "B",
+            fields: [
+              { kind: "object", name: "as", type: "A", isList: true, isRequired: true, relationName: "ABLinks", relationFromFields: [], relationToFields: [] }
+            ]
+          }
+        ]
+      }
+    };
+
+    const invalidImplicitMetadata = {
+      provider: "postgresql",
+      relationMode: "foreignKeys",
+      models: new Map([
+        ["A", makeModelMetadata({ tableName: "A" })],
+        ["B", makeModelMetadata({ tableName: "B" })]
+      ]),
+      modelLocations: new Map(),
+      fieldLocations: new Map([
+        ["A", new Map()],
+        ["B", new Map()]
+      ])
+    } as any;
+
+    expect(() => buildSchemaDefinition(invalidImplicitDmmf, invalidImplicitMetadata)).toThrow(
+      "does not have a single-column primary key suitable for implicit many-to-many synthesis"
+    );
+
+    const missingCounterpartDefinition = buildSchemaDefinition(
+      {
+        datamodel: {
+          indexes: [{ model: "Lonely", type: "id", fields: [{ name: "id" }] }],
+          enums: [],
+          models: [
+            {
+              name: "Lonely",
+              fields: [
+                { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+                { kind: "object", name: "ghosts", type: "Missing", isList: true, isRequired: true, relationName: "GhostLink", relationFromFields: [], relationToFields: [] }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        provider: "postgresql",
+        relationMode: "foreignKeys",
+        models: new Map([["Lonely", makeModelMetadata({ tableName: "Lonely" })]]),
+        modelLocations: new Map(),
+        fieldLocations: new Map([["Lonely", new Map()]])
+      } as any
+    );
+    expect(missingCounterpartDefinition.models).toHaveLength(1);
+
+    const undefinedDefaultDefinition = buildSchemaDefinition(
+      {
+        datamodel: {
+          indexes: [],
+          enums: [],
+          models: [
+            {
+              name: "Odd",
+              fields: [
+                {
+                  kind: "scalar",
+                  name: "value",
+                  type: "String",
+                  isList: false,
+                  isRequired: true,
+                  isId: false,
+                  isUnique: false,
+                  hasDefaultValue: true,
+                  default: undefined
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        provider: "postgresql",
+        relationMode: "foreignKeys",
+        models: new Map([["Odd", makeModelMetadata({ tableName: "Odd" })]]),
+        modelLocations: new Map(),
+        fieldLocations: new Map([["Odd", new Map()]])
+      } as any
+    );
+    expect(undefinedDefaultDefinition.models[0].scalarFields[0]?.defaultKind).toBeUndefined();
+
+    const invalidSortDefinition = buildSchemaDefinition(
+      {
+        datamodel: {
+          indexes: [
+            {
+              model: "Sorted",
+              type: "index",
+              dbName: "sorted_idx",
+              fields: [{ name: "label", sortOrder: "Sideways" }]
+            }
+          ],
+          enums: [],
+          models: [
+            {
+              name: "Sorted",
+              fields: [
+                {
+                  kind: "scalar",
+                  name: "label",
+                  type: "String",
+                  isList: false,
+                  isRequired: true,
+                  isId: false,
+                  isUnique: false,
+                  hasDefaultValue: false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        provider: "postgresql",
+        relationMode: "foreignKeys",
+        models: new Map([["Sorted", makeModelMetadata({ tableName: "Sorted" })]]),
+        modelLocations: new Map(),
+        fieldLocations: new Map([["Sorted", new Map()]])
+      } as any
+    );
+    expect(invalidSortDefinition.models[0].constraints[0]?.fields[0]?.sort).toBeUndefined();
+
+    const postgresRendered = renderPythonModule(
+      {
+        provider: "postgresql",
+        enums: [
+          {
+            name: "FancyEnum",
+            pythonName: "FancyEnum",
+            values: [{ name: "ONE", pythonName: "ONE", value: "one" }]
+          }
+        ],
+        models: [
+          {
+            name: "Parent",
+            pythonName: "Parent",
+            tableName: "parents",
+            tableSchema: "tenant_a",
+            constraints: [{ kind: "index", name: "ix_parent_xml", fields: [{ name: "xmlField", length: 4 }] }],
+            foreignKeys: [],
+            scalarFields: [
+              { kind: "scalar", name: "status", pythonName: "status", columnName: "status", prismaType: "FancyEnum", pythonType: "FancyEnum", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
+              { kind: "scalar", name: "xmlField", pythonName: "xmlField", columnName: "xmlField", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, nativeType: { name: "Xml", args: [] } },
+              { kind: "scalar", name: "inetField", pythonName: "inetField", columnName: "inetField", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, nativeType: { name: "Inet", args: [] } },
+              { kind: "scalar", name: "citextField", pythonName: "citextField", columnName: "citextField", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false, nativeType: { name: "Citext", args: [] } }
+            ],
+            relationFields: [
+              {
+                kind: "relation",
+                name: "children",
+                pythonName: "children",
+                targetModel: "Child",
+                isList: true,
+                isNullable: false,
+                relationName: "FallbackBranch",
+                relationFromFields: [],
+                relationToFields: [],
+                backPopulates: "missingChildren",
+                foreignKeyFieldNames: []
+              }
+            ]
+          },
+          {
+            name: "Child",
+            pythonName: "Child",
+            tableName: "children",
+            constraints: [],
+            foreignKeys: [],
+            scalarFields: [
+              { kind: "scalar", name: "parentId", pythonName: "parentId", columnName: "parent_id", prismaType: "Int", pythonType: "int", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
+            ],
+            relationFields: [
+              {
+                kind: "relation",
+                name: "owner",
+                pythonName: "owner",
+                targetModel: "Parent",
+                isList: false,
+                isNullable: false,
+                relationName: "DifferentName",
+                relationFromFields: ["parentId"],
+                relationToFields: ["id"],
+                backPopulates: "children",
+                foreignKeyFieldNames: ["parentId"]
+              }
+            ]
+          }
+        ]
+      } as any,
+      {
+        moduleName: "models.py",
+        headerComment: false,
+        schemaHash: "hash",
+        packageVersion: PACKAGE_VERSION
+      }
+    );
+
+    expect(postgresRendered).toContain("SAEnum(FancyEnum, name='FancyEnum', schema='tenant_a')");
+    expect(postgresRendered).toContain("from sqlalchemy.dialects.postgresql import CITEXT, INET, XML");
+    expect(postgresRendered).toContain("children: list['Child'] = Relationship(back_populates='missingChildren', sa_relationship_kwargs={\"foreign_keys\": 'Child.parentId'})");
+    expect(postgresRendered).toContain("Index('ix_parent_xml', 'xmlField')");
+
+    const mysqlRendered = renderPythonModule(
+      {
+        provider: "mysql",
+        enums: [],
+        models: [
+          {
+            name: "Keyworded",
+            pythonName: "Keyworded",
+            tableName: "keyworded",
+            constraints: [
+              { kind: "unique", name: "uq_keyworded_slug", fields: [{ name: "slug", length: 8 }] },
+              { kind: "index", name: "ix_keyworded_from", fields: [{ name: "from" }] },
+              { kind: "index", name: "ix_keyworded_slug", fields: [{ name: "slug", sort: "asc" }] },
+              { kind: "index", fields: [{ name: "missingField", length: 5 }] },
+              { kind: "index", fields: [{ name: "slug" }] }
+            ],
+            foreignKeys: [],
+            scalarFields: [
+              { kind: "scalar", name: "from", pythonName: "from_", columnName: "from", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false },
+              { kind: "scalar", name: "slug", pythonName: "slug", columnName: "slug", prismaType: "String", pythonType: "str", isList: false, isNullable: false, isId: false, isUnique: false, hasDefaultValue: false, isUpdatedAt: false }
+            ],
+            relationFields: []
+          }
+        ]
+      } as any,
+      {
+        moduleName: "models.py",
+        headerComment: false,
+        schemaHash: "hash",
+        packageVersion: PACKAGE_VERSION
+      }
+    );
+
+    expect(mysqlRendered).toContain("Index('ix_keyworded_from', 'from')");
+    expect(mysqlRendered).toContain("Index('ix_keyworded_slug', asc('slug'))");
+    expect(mysqlRendered).toContain("Index('uq_keyworded_slug', 'slug', unique=True, mysql_length={'slug': 8})");
+    expect(mysqlRendered).toContain("Index('missingField', mysql_length={'missingField': 5})");
+    expect(mysqlRendered).toContain("Index('slug')");
   });
 });
 
@@ -1297,7 +1798,7 @@ model User {
 });
 
 describe("prisma ast metadata", () => {
-  it("ignores malformed model constraints without array fields", () => {
+  it("keeps default model metadata when optional AST attributes are absent", () => {
     const datamodel = `datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -1315,10 +1816,14 @@ model User {
       }
     });
 
-    expect(metadata.models.get("User")?.constraints).toEqual([]);
+    expect(metadata.models.get("User")).toMatchObject({
+      tableName: "User",
+      tableSchema: undefined,
+      ignored: false
+    });
   });
 
-  it("covers provider errors, missing blocks, and mixed constraint arguments", () => {
+  it("covers provider errors, missing blocks, and Prisma-specific AST metadata", () => {
     const unsupported = `datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
@@ -1350,15 +1855,19 @@ model User {
 
     const datamodel = `datasource db {
   provider = "postgresql"
+  relationMode = "foreignKeys"
   url      = env("DATABASE_URL")
 }
 
 model User {
   id    Int    @id
-  email String @unique(map: "uq_user_email")
-  name  String @unique(name: "uq_user_name")
+  email String
+  friendId Int?
+  friend User? @relation(fields: [friendId], references: [id], map: "user_friend_fk")
+  helper String @ignore
 
-  @@unique([id(length: 4)], map: "uq_user_id")
+  @@schema("tenant_a")
+  @@ignore
 }
 `;
     const metadata = extractAstMetadata(datamodel, {
@@ -1370,14 +1879,214 @@ model User {
       }
     });
 
-    expect(metadata.models.get("User")?.constraints).toEqual([
-      { kind: "unique", fields: [], name: "uq_user_id" }
-    ]);
-    expect(metadata.models.get("User")?.fieldConstraintNames.get("email")).toBe("uq_user_email");
-    expect(metadata.models.get("User")?.fieldConstraintNames.get("name")).toBe("uq_user_name");
-    expect(metadata.models.get("Missing")).toMatchObject({
-      tableName: "Missing",
-      constraints: []
+    expect(metadata.relationMode).toBe("foreignKeys");
+    expect(metadata.models.get("User")).toMatchObject({
+      tableName: "User",
+      tableSchema: "tenant_a",
+      ignored: true
     });
+    expect(metadata.models.get("User")?.ignoredFields.has("helper")).toBe(true);
+    expect(metadata.models.get("User")?.relationFields.get("friend")).toEqual({
+      map: "user_friend_fk"
+    });
+    expect(metadata.models.get("Missing")).toMatchObject({
+      tableName: "Missing"
+    });
+    expect(metadata.unsupportedDiagnostics).toEqual([]);
+  });
+
+
+  it("captures unsupported non-field index expressions from the AST", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([[value]])
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          message: expect.stringContaining("Non-field index expressions")
+        })
+      ])
+    );
+  });
+
+  it("handles basic index metadata without advanced diagnostics", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value], map: "user_value_idx")
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual([]);
+  });
+
+  it("captures malformed index modifier parameters with model-location fallback", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([ghost(raw("lower(value)"))])
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          field: "ghost",
+          location: metadata.modelLocations.get("User")
+        })
+      ])
+    );
+  });
+
+  it("covers index function entries without modifier params", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value()])
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual([]);
+  });
+
+  it("falls back to the model location for unsupported named index modifiers", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([ghost(ops: raw("gin_trgm_ops"))])
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          field: "ghost",
+          location: metadata.modelLocations.get("User"),
+          message: expect.stringContaining("field modifier 'ops'")
+        })
+      ])
+    );
+  });
+
+  it("captures unsupported advanced index metadata from the AST", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value(ops: raw("gin_trgm_ops"))], type: Gin)
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User" }),
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", field: "value" })
+      ])
+    );
+  });
+
+  it("covers fallback stringification for non-literal index types", () => {
+    const datamodel = `datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  value String @db.VarChar(255)
+
+  @@index([value], type: raw("Gin"))
+}`;
+
+    const metadata = extractAstMetadata(datamodel, {
+      datamodel: {
+        models: [{ name: "User", dbName: null, fields: [] }]
+      }
+    });
+
+    expect(metadata.unsupportedDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          message: expect.stringContaining("[object Object]")
+        })
+      ])
+    );
   });
 });

@@ -1,6 +1,8 @@
 import type {
   ConstraintDefinition,
+  ConstraintFieldDefinition,
   EnumDefinition,
+  ForeignKeyDefinition,
   ModelDefinition,
   NativeType,
   RelationFieldDefinition,
@@ -23,6 +25,8 @@ type RenderContext = {
   enumNameMap: Map<string, string>;
   fieldNameMap: Map<string, Map<string, string>>;
 };
+
+type LegacyConstraintField = ConstraintFieldDefinition | string;
 
 const SCALAR_PRISMA_TYPES = new Set([
   "String",
@@ -48,9 +52,9 @@ export function renderPythonModule(
   }
 ): string {
   const imports: ImportState = {
-    standard: new Set(),
+    standard: new Set(["from typing import Any, Optional"]),
     sqlmodel: new Set(["Field", "Relationship", "SQLModel"]),
-    sqlalchemy: new Set(["Column", "ForeignKey"]),
+    sqlalchemy: new Set(["Column"]),
     postgres: new Set(),
     mysql: new Set()
   };
@@ -78,7 +82,14 @@ export function renderPythonModule(
     sections.push(schema.enums.map((entry) => renderEnum(entry)).join("\n\n"));
   }
 
-  sections.push(schema.models.map((model) => renderModel(model, schema, context)).join("\n\n\n"));
+  const generatedLinkModels = schema.models.filter((model) => model.isGeneratedLinkModel);
+  const regularModels = schema.models.filter((model) => !model.isGeneratedLinkModel);
+
+  if (generatedLinkModels.length > 0) {
+    sections.push(generatedLinkModels.map((model) => renderModel(model, schema, context)).join("\n\n\n"));
+  }
+
+  sections.push(regularModels.map((model) => renderModel(model, schema, context)).join("\n\n\n"));
 
   return `${sections.filter(Boolean).join("\n\n")}\n`;
 }
@@ -99,16 +110,17 @@ function buildRenderContext(schema: SchemaDefinition): RenderContext {
 }
 
 function collectImports(schema: SchemaDefinition, imports: ImportState): void {
-  imports.standard.add("from typing import Any, Optional");
   if (schema.enums.length > 0) {
     imports.standard.add("from enum import Enum");
+    imports.sqlalchemy.add("Enum as SAEnum");
   }
 
   for (const model of schema.models) {
+    if (model.tableSchema) {
+      imports.standard.add("from typing import Any, Optional");
+    }
+
     for (const field of model.scalarFields) {
-      if (schema.enums.some((entry) => entry.name === field.prismaType)) {
-        imports.sqlalchemy.add("Enum as SAEnum");
-      }
       if (field.pythonType === "Decimal") {
         imports.standard.add("from decimal import Decimal");
       }
@@ -121,7 +133,11 @@ function collectImports(schema: SchemaDefinition, imports: ImportState): void {
       if (field.isUpdatedAt) {
         imports.sqlalchemy.add("func");
       }
+      if (field.isList && schema.provider === "postgresql") {
+        imports.postgres.add("ARRAY");
+      }
       collectTypeImports(schema.provider, field.nativeType, imports, field);
+
       if (field.defaultValue && typeof field.defaultValue === "object" && "name" in field.defaultValue) {
         const name = String(field.defaultValue.name);
         if (name === "uuid") {
@@ -134,17 +150,37 @@ function collectImports(schema: SchemaDefinition, imports: ImportState): void {
           imports.sqlalchemy.add("func");
         }
       }
+      if (getForeignKeyFieldCount(field.foreignKey) === 1) {
+        imports.sqlalchemy.add("ForeignKey");
+      }
     }
 
     for (const constraint of model.constraints) {
+      const normalizedFields = normalizeConstraintFields(constraint.fields);
       if (constraint.kind === "unique") {
-        imports.sqlalchemy.add("UniqueConstraint");
+        if (normalizedFields.some((field) => field.length || field.sort)) {
+          imports.sqlalchemy.add("Index");
+        } else {
+          imports.sqlalchemy.add("UniqueConstraint");
+        }
       }
       if (constraint.kind === "index") {
         imports.sqlalchemy.add("Index");
+        if (normalizedFields.some((field) => field.sort === "desc")) {
+          imports.sqlalchemy.add("desc");
+        }
+        if (normalizedFields.some((field) => field.sort === "asc")) {
+          imports.sqlalchemy.add("asc");
+        }
       }
-      if (constraint.kind === "primary_key" && constraint.fields.length > 1) {
+      if (constraint.kind === "primary_key" && normalizedFields.length > 1) {
         imports.sqlalchemy.add("PrimaryKeyConstraint");
+      }
+    }
+
+    for (const foreignKey of model.foreignKeys ?? []) {
+      if (getForeignKeyFieldCount(foreignKey) > 1) {
+        imports.sqlalchemy.add("ForeignKeyConstraint");
       }
     }
   }
@@ -156,10 +192,6 @@ function collectTypeImports(
   imports: ImportState,
   field: ScalarFieldDefinition
 ): void {
-  if (field.isList && provider === "postgresql") {
-    imports.postgres.add("ARRAY");
-  }
-
   if (!nativeType) {
     switch (field.prismaType) {
       case "String":
@@ -200,15 +232,8 @@ function collectTypeImports(
 
 function renderImports(imports: ImportState): string {
   const lines: string[] = [...imports.standard].sort();
-
-  /* v8 ignore next 3 */
-  if (imports.sqlmodel.size > 0) {
-    lines.push(`from sqlmodel import ${[...imports.sqlmodel].sort().join(", ")}`);
-  }
-  /* v8 ignore next 3 */
-  if (imports.sqlalchemy.size > 0) {
-    lines.push(`from sqlalchemy import ${[...imports.sqlalchemy].sort().join(", ")}`);
-  }
+  lines.push(`from sqlmodel import ${[...imports.sqlmodel].sort().join(", ")}`);
+  lines.push(`from sqlalchemy import ${[...imports.sqlalchemy].sort().join(", ")}`);
   if (imports.postgres.size > 0) {
     lines.push(`from sqlalchemy.dialects.postgresql import ${[...imports.postgres].sort().join(", ")}`);
   }
@@ -235,9 +260,9 @@ function renderModel(model: ModelDefinition, schema: SchemaDefinition, context: 
     lines.push(`    ${comment}`);
   }
 
-  const tableArgs = renderTableArgs(model);
-  if (tableArgs.length > 0) {
-    lines.push(`    __table_args__ = (${tableArgs.join(", ")},)`);
+  const tableArgs = renderTableArgs(model, schema, context);
+  if (tableArgs) {
+    lines.push(`    __table_args__ = ${tableArgs}`);
   }
 
   for (const field of model.scalarFields) {
@@ -270,36 +295,76 @@ function renderSanitizationComments(model: ModelDefinition): string[] {
   return comments;
 }
 
-function renderTableArgs(model: ModelDefinition): string[] {
+function renderTableArgs(model: ModelDefinition, schema: SchemaDefinition, context: RenderContext): string | undefined {
   const args: string[] = [];
 
   for (const constraint of model.constraints) {
-    if (constraint.kind === "primary_key" && constraint.fields.length > 1) {
-      args.push(renderConstraintCall("PrimaryKeyConstraint", constraint, model));
+    if (constraint.kind === "primary_key" && normalizeConstraintFields(constraint.fields).length > 1) {
+      args.push(renderConstraintCall("PrimaryKeyConstraint", constraint, model, schema, context));
     }
     if (constraint.kind === "unique") {
-      args.push(renderConstraintCall("UniqueConstraint", constraint, model));
+      args.push(renderConstraintCall("UniqueConstraint", constraint, model, schema, context));
     }
     if (constraint.kind === "index") {
-      args.push(renderConstraintCall("Index", constraint, model));
+      args.push(renderConstraintCall("Index", constraint, model, schema, context));
     }
   }
 
-  return args;
+  for (const foreignKey of model.foreignKeys ?? []) {
+    if (getForeignKeyFieldCount(foreignKey) > 1) {
+      args.push(renderForeignKeyConstraint(foreignKey, model, schema));
+    }
+  }
+
+  if (model.tableSchema) {
+    args.push(`{"schema": ${quotePythonString(model.tableSchema)}}`);
+  }
+
+  if (args.length === 0) {
+    return undefined;
+  }
+
+  return `(${args.join(", ")},)`;
 }
 
 function renderConstraintCall(
   helper: "PrimaryKeyConstraint" | "UniqueConstraint" | "Index",
   constraint: ConstraintDefinition,
-  model: ModelDefinition
+  model: ModelDefinition,
+  schema: SchemaDefinition,
+  context: RenderContext
 ): string {
-  const columnNames = constraint.fields.map((fieldName) => {
-    const scalarField = model.scalarFields.find((field) => field.name === fieldName);
-    return quotePythonString(scalarField?.columnName ?? fieldName);
+  const normalizedFields = normalizeConstraintFields(constraint.fields);
+  const fieldArgs = normalizedFields.map((field) => renderConstraintFieldExpression(field, helper, model, context));
+  const anyDialectOptions = normalizedFields.some((field) => field.length || field.sort);
+
+  if ((helper === "UniqueConstraint" || helper === "Index") && anyDialectOptions) {
+    const args = [
+      ...(constraint.name ? [quotePythonString(constraint.name)] : []),
+      ...fieldArgs
+    ];
+    const kwargs: string[] = [];
+    if (helper === "UniqueConstraint") {
+      kwargs.push("unique=True");
+    }
+    const mysqlLength = buildMysqlLengthKwarg(constraint, model, schema.provider);
+    if (mysqlLength) {
+      kwargs.push(mysqlLength);
+    }
+    return `Index(${[...args, ...kwargs].join(", ")})`;
+  }
+
+  const columnNames = normalizedFields.map((field) => {
+    const scalarField = model.scalarFields.find((candidate) => candidate.name === field.name);
+    return quotePythonString(scalarField?.columnName ?? field.name);
   });
 
-  if (helper === "Index" && constraint.name) {
-    return `Index(${quotePythonString(constraint.name)}, ${columnNames.join(", ")})`;
+  if (helper === "Index") {
+    const args = [
+      ...(constraint.name ? [quotePythonString(constraint.name)] : []),
+      ...fieldArgs
+    ];
+    return `Index(${args.join(", ")})`;
   }
 
   const args = [...columnNames];
@@ -309,6 +374,83 @@ function renderConstraintCall(
   return `${helper}(${args.join(", ")})`;
 }
 
+function renderConstraintFieldExpression(
+  field: ConstraintFieldDefinition,
+  helper: "PrimaryKeyConstraint" | "UniqueConstraint" | "Index",
+  model: ModelDefinition,
+  context: RenderContext
+): string {
+  const scalarField = model.scalarFields.find((candidate) => candidate.name === field.name);
+  const columnName = scalarField?.columnName ?? field.name;
+
+  if (helper === "Index" || helper === "UniqueConstraint") {
+    if (field.sort === "desc") {
+      return `desc(${quotePythonString(columnName)})`;
+    }
+    if (field.sort === "asc") {
+      return `asc(${quotePythonString(columnName)})`;
+    }
+  }
+
+  if (helper === "Index" && scalarField && scalarField.pythonName !== field.name) {
+    return quotePythonString(columnName);
+  }
+
+  return quotePythonString(columnName);
+}
+
+function buildMysqlLengthKwarg(
+  constraint: ConstraintDefinition,
+  model: ModelDefinition,
+  provider: SupportedProvider
+): string | undefined {
+  if (provider !== "mysql") {
+    return undefined;
+  }
+
+  const items = normalizeConstraintFields(constraint.fields)
+    .filter((field) => field.length)
+    .map((field) => {
+      const scalarField = model.scalarFields.find((candidate) => candidate.name === field.name);
+      const columnName = scalarField?.columnName ?? field.name;
+      return `${quotePythonString(columnName)}: ${field.length}`;
+    });
+
+  if (items.length === 0) {
+    return undefined;
+  }
+
+  return `mysql_length={${items.join(", ")}}`;
+}
+
+function renderForeignKeyConstraint(
+  foreignKey: ForeignKeyDefinition,
+  model: ModelDefinition,
+  schema: SchemaDefinition
+): string {
+  const localColumns = getForeignKeyFields(foreignKey)
+    .map((fieldName) => quotePythonString(resolveScalarColumnName(model, fieldName)))
+    .join(", ");
+  const targetColumns = getForeignKeyTargetFields(foreignKey)
+    .map((fieldName) =>
+      quotePythonString(buildTargetColumnReference(schema, foreignKey.targetModel, fieldName))
+    )
+    .join(", ");
+  const args = [`[${localColumns}]`, `[${targetColumns}]`];
+
+  if (foreignKey.name) {
+    args.push(`name=${quotePythonString(foreignKey.name)}`);
+  }
+  if (foreignKey.onDelete) {
+    args.push(`ondelete=${quotePythonString(foreignKey.onDelete)}`);
+  }
+  if (foreignKey.onUpdate) {
+    args.push(`onupdate=${quotePythonString(foreignKey.onUpdate)}`);
+  }
+
+  return `ForeignKeyConstraint(${args.join(", ")})`;
+}
+
 function renderScalarField(
   field: ScalarFieldDefinition,
   model: ModelDefinition,
@@ -316,13 +458,10 @@ function renderScalarField(
   context: RenderContext
 ): string {
   const annotation = renderScalarAnnotation(field, context);
-  const columnParts = buildColumnParts(field, schema, context);
+  const columnParts = buildColumnParts(field, model, schema, context);
   const defaultClause = renderColumnDefault(field, context);
   const columnKwargs = buildColumnKwargs(field, model, defaultClause.column);
-  /* v8 ignore next 3 */
-  if (columnKwargs.length > 0) {
-    columnParts.push(...columnKwargs);
-  }
+  columnParts.push(...columnKwargs);
 
   const fieldArgs = [`sa_column=Column(${columnParts.join(", ")})`];
   if (defaultClause.field) {
@@ -336,6 +475,7 @@ function renderScalarField(
 
 function buildColumnParts(
   field: ScalarFieldDefinition,
+  model: ModelDefinition,
   schema: SchemaDefinition,
   context: RenderContext
 ): string[] {
@@ -345,10 +485,20 @@ function buildColumnParts(
     parts.push(quotePythonString(field.columnName));
   }
 
-  parts.push(renderColumnType(field, schema, context));
+  parts.push(renderColumnType(field, model, schema, context));
 
-  if (field.foreignKey) {
-    parts.push(`ForeignKey(${quotePythonString(toForeignKeyTarget(field, schema))})`);
+  if (field.foreignKey && getForeignKeyFieldCount(field.foreignKey) === 1) {
+    const args = [quotePythonString(buildTargetColumnReference(schema, field.foreignKey.targetModel, getForeignKeyTargetFields(field.foreignKey)[0]))];
+    if (field.foreignKey.name) {
+      args.push(`name=${quotePythonString(field.foreignKey.name)}`);
+    }
+    if (field.foreignKey.onDelete) {
+      args.push(`ondelete=${quotePythonString(field.foreignKey.onDelete)}`);
+    }
+    if (field.foreignKey.onUpdate) {
+      args.push(`onupdate=${quotePythonString(field.foreignKey.onUpdate)}`);
+    }
+    parts.push(`ForeignKey(${args.join(", ")})`);
   }
 
   return parts;
@@ -361,13 +511,14 @@ function buildColumnKwargs(
 ): string[] {
   const kwargs: string[] = [];
 
-  if (field.isUnique) {
+  const hasCompositePrimaryKey = model.constraints.some(
+    (constraint) => constraint.kind === "primary_key" && normalizeConstraintFields(constraint.fields).length > 1
+  );
+
+  if (field.isUnique && !field.isId) {
     kwargs.push("unique=True");
   }
 
-  const hasCompositePrimaryKey = model.constraints.some(
-    (constraint) => constraint.kind === "primary_key" && constraint.fields.length > 1
-  );
   if (!hasCompositePrimaryKey && field.isId) {
     kwargs.push("primary_key=True");
   }
@@ -379,7 +530,6 @@ function buildColumnKwargs(
   }
 
   if (field.isUpdatedAt) {
-    kwargs.push("server_default=func.now()");
     kwargs.push("onupdate=func.now()");
   }
 
@@ -395,6 +545,11 @@ function renderRelationField(
   const args = [
     `back_populates=${quotePythonString(resolveFieldPythonName(field.targetModel, field.backPopulates, context))}`
   ];
+
+  if (field.linkModelName) {
+    args.push(`link_model=${field.linkModelName}`);
+  }
+
   const relationshipKwargs = buildRelationshipKwargs(model, field, schema, context);
   if (relationshipKwargs.length > 0) {
     args.push(`sa_relationship_kwargs={${relationshipKwargs.join(", ")}}`);
@@ -409,6 +564,10 @@ function renderRelationshipForeignKeyReference(
   schema: SchemaDefinition,
   context: RenderContext
 ): string | undefined {
+  if (field.linkModelName) {
+    return undefined;
+  }
+
   if (field.foreignKeyFieldNames.length > 0) {
     return renderForeignKeyReference(model, field, context);
   }
@@ -436,10 +595,10 @@ function renderForeignKeyReference(
 function renderRelationAnnotation(field: RelationFieldDefinition, context: RenderContext): string {
   const targetType = context.modelNameMap.get(field.targetModel) ?? field.targetModel;
   if (field.isList) {
-    return `list[${quotePythonString(targetType)}]`;
+    return `list['${targetType}']`;
   }
 
-  return field.isNullable ? `Optional[${quotePythonString(targetType)}]` : quotePythonString(targetType);
+  return field.isNullable ? `Optional['${targetType}']` : `'${targetType}'`;
 }
 
 function buildRelationshipKwargs(
@@ -454,7 +613,7 @@ function buildRelationshipKwargs(
     kwargs.push(`"foreign_keys": ${quotePythonString(foreignKeyReference)}`);
   }
 
-  if (field.targetModel === model.name && !field.isList && field.relationToFields.length > 0) {
+  if (field.targetModel === model.name && !field.isList && field.relationToFields.length > 0 && !field.linkModelName) {
     kwargs.push(`"remote_side": ${quotePythonString(renderRemoteSideReference(model, field, context))}`);
   }
 
@@ -493,24 +652,30 @@ function renderScalarAnnotation(field: ScalarFieldDefinition, context: RenderCon
 
 function renderColumnType(
   field: ScalarFieldDefinition,
+  model: ModelDefinition,
   schema: SchemaDefinition,
   context: RenderContext
 ): string {
   if (field.isList && schema.provider === "postgresql") {
-    return `ARRAY(${renderBaseColumnType(field, schema.provider, context)})`;
+    return `ARRAY(${renderBaseColumnType(field, model, schema.provider, context)})`;
   }
 
-  return renderBaseColumnType(field, schema.provider, context);
+  return renderBaseColumnType(field, model, schema.provider, context);
 }
 
 function renderBaseColumnType(
   field: ScalarFieldDefinition,
+  model: ModelDefinition,
   provider: SupportedProvider,
   context: RenderContext
 ): string {
   if (shouldRenderNamedEnumColumn(field)) {
     const resolvedType = resolveTypeName(field.prismaType, context);
-    return `SAEnum(${resolvedType}, name=${quotePythonString(field.columnName)})`;
+    const args = [`${resolvedType}`, `name=${quotePythonString(field.prismaType)}`];
+    if (provider === "postgresql" && model.tableSchema) {
+      args.push(`schema=${quotePythonString(model.tableSchema)}`);
+    }
+    return `SAEnum(${args.join(", ")})`;
   }
 
   if (field.prismaType === "Json") {
@@ -674,6 +839,12 @@ function mapPostgresType(nativeType: NativeType): { typeName: string; args: stri
       return { typeName: "BYTEA", args: [] };
     case "Uuid":
       return { typeName: "UUID", args: ["as_uuid=True"] };
+    case "Xml":
+      return { typeName: "XML", args: [] };
+    case "Inet":
+      return { typeName: "INET", args: [] };
+    case "Citext":
+      return { typeName: "CITEXT", args: [] };
     default:
       return { typeName: nativeType.name.toUpperCase(), args: nativeType.args };
   }
@@ -760,13 +931,17 @@ function resolveFieldPythonName(modelName: string, fieldName: string, context: R
   return context.fieldNameMap.get(modelName)?.get(fieldName) ?? fieldName;
 }
 
-function toForeignKeyTarget(field: ScalarFieldDefinition, schema: SchemaDefinition): string {
-  const relation = field.foreignKey!;
-  const targetModel = schema.models.find((model) => model.name === relation.targetModel);
-  const targetField = targetModel?.scalarFields.find((candidate) => candidate.name === relation.targetField);
-  const tableName = targetModel?.tableName ?? relation.targetModel;
-  const columnName = targetField?.columnName ?? relation.targetField;
-  return `${tableName}.${columnName}`;
+function resolveScalarColumnName(model: ModelDefinition, fieldName: string): string {
+  return model.scalarFields.find((candidate) => candidate.name === fieldName)?.columnName ?? fieldName;
+}
+
+function buildTargetColumnReference(schema: SchemaDefinition, targetModelName: string, targetFieldName: string): string {
+  const targetModel = schema.models.find((model) => model.name === targetModelName);
+  const targetField = targetModel?.scalarFields.find((candidate) => candidate.name === targetFieldName);
+  const tableName = targetModel?.tableName ?? targetModelName;
+  const schemaName = targetModel?.tableSchema;
+  const columnName = targetField?.columnName ?? targetFieldName;
+  return schemaName ? `${schemaName}.${tableName}.${columnName}` : `${tableName}.${columnName}`;
 }
 
 function shouldRenderNamedEnumColumn(field: ScalarFieldDefinition): boolean {
@@ -777,4 +952,52 @@ function shouldRenderNamedEnumColumn(field: ScalarFieldDefinition): boolean {
     !field.nativeType &&
     !isScalarPrismaType(field.prismaType)
   );
+}
+
+function normalizeConstraintFields(fields: LegacyConstraintField[]): ConstraintFieldDefinition[] {
+  return fields.map((field) => (typeof field === "string" ? { name: field } : field));
+}
+
+function getForeignKeyFields(
+  foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
+): string[] {
+  if (!foreignKey) {
+    return [];
+  }
+
+  if ("fields" in foreignKey && Array.isArray(foreignKey.fields)) {
+    return foreignKey.fields;
+  }
+
+  const legacyField = (foreignKey as { field?: string }).field;
+  return typeof legacyField === "string" ? [legacyField] : [];
+}
+
+function getForeignKeyTargetFields(
+  foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
+): string[] {
+  /* v8 ignore next 3 -- defensive guard for legacy/internal helper calls */
+  if (!foreignKey) {
+    return [];
+  }
+
+  if ("targetFields" in foreignKey && Array.isArray(foreignKey.targetFields)) {
+    return foreignKey.targetFields;
+  }
+
+  /* v8 ignore next 3 -- malformed legacy helper input */
+  const legacyTargetField = (foreignKey as { targetField?: string }).targetField;
+  /* v8 ignore next -- malformed legacy helper input */
+  return typeof legacyTargetField === "string" ? [legacyTargetField] : [];
+}
+
+function getForeignKeyFieldCount(
+  foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
+): number {
+  const explicitFields = getForeignKeyFields(foreignKey);
+  if (explicitFields.length > 0) {
+    return explicitFields.length;
+  }
+  const legacyTargetField = (foreignKey as { targetField?: string } | undefined)?.targetField;
+  return typeof legacyTargetField === "string" ? 1 : 0;
 }

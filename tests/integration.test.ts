@@ -11,6 +11,8 @@ const dockerAvailable = commandAvailable("docker", ["info"]);
 const uvAvailable = commandAvailable("uv", ["--version"]);
 const prismaAvailable = commandAvailable("npx", ["prisma", "--version"]);
 
+const TESTED_SQLMODEL_VERSION = "0.0.38";
+
 const postgresSchema = `datasource db {
   provider = "postgresql"
 }
@@ -182,6 +184,86 @@ model Comment {
 
   @@index([taskId, flagged], map: "comment_task_flagged_idx")
   @@map("comments")
+}`;
+
+const postgresExpandedFeatureSchema = `datasource db {
+  provider = "postgresql"
+  schemas  = ["public", "tenant_a"]
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+generator sqlmodel {
+  provider = "node __GENERATOR_PATH__"
+  output   = "./generated/sqlmodel"
+}
+
+enum PostPhase {
+  DRAFT
+  REVIEW
+  PUBLISHED
+
+  @@schema("tenant_a")
+}
+
+enum ReleaseChannel {
+  ALPHA
+  BETA
+  STABLE
+
+  @@schema("tenant_a")
+}
+
+model User {
+  id     Int    @id @default(autoincrement())
+  email  String @unique @db.VarChar(255)
+  posts  Post[]
+
+  @@map("users")
+  @@schema("tenant_a")
+}
+
+model Tag {
+  id     Int    @id @default(autoincrement())
+  label  String @unique @db.VarChar(64)
+  posts  Post[]
+
+  @@map("tags")
+  @@schema("tenant_a")
+}
+
+model Project {
+  leftId   Int
+  rightId  Int
+  name     String @db.VarChar(120)
+  posts    Post[]
+
+  @@id([leftId, rightId])
+  @@map("projects")
+  @@schema("tenant_a")
+}
+
+model Post {
+  id            Int               @id @default(autoincrement())
+  authorId      Int               @map("author_id")
+  projectLeft   Int               @map("project_left")
+  projectRight  Int               @map("project_right")
+  title         String            @db.VarChar(200)
+  keywords      String[]
+  phases        PostPhase[]
+  channels      ReleaseChannel[]
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  author        User              @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "posts_author_fk")
+  project       Project           @relation(fields: [projectLeft, projectRight], references: [leftId, rightId], onDelete: Cascade, onUpdate: Restrict, map: "posts_project_fk")
+  tags          Tag[]
+
+  @@index([authorId], map: "posts_author_idx")
+  @@map("posts")
+  @@schema("tenant_a")
 }`;
 
 describe.runIf(dockerAvailable && uvAvailable && prismaAvailable)("docker-backed integration", () => {
@@ -907,6 +989,285 @@ with Session(engine) as session:
     },
     300_000
   );
+
+  it(
+    "creates multi-schema PostgreSQL tables via SQLModel and matches Prisma query parity for arrays, implicit many-to-many, composite relations, and updatedAt",
+    async () => {
+      await withTempWorkspace(async (tmpDir) => {
+        const postgresPort = await getFreePort();
+        const containerName = `pef-${randomUUID().slice(0, 8)}`;
+        const prismaDatabaseUrl = `postgresql://postgres:postgres@127.0.0.1:${postgresPort}/schemasync`;
+        const pythonDatabaseUrl = `postgresql+psycopg://postgres:postgres@127.0.0.1:${postgresPort}/schemasync`;
+
+        try {
+          run("docker", [
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            containerName,
+            "-e",
+            "POSTGRES_PASSWORD=postgres",
+            "-e",
+            "POSTGRES_USER=postgres",
+            "-e",
+            "POSTGRES_DB=schemasync",
+            "-p",
+            `127.0.0.1:${postgresPort}:5432`,
+            "postgres:16-alpine"
+          ]);
+
+          waitForContainer(containerName, ["pg_isready", "-U", "postgres", "-d", "schemasync"]);
+          await symlink(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"), "dir");
+          const schemaPath = await writeWorkspaceSchema(tmpDir, postgresExpandedFeatureSchema);
+          run("npx", ["prisma", "generate", "--schema", schemaPath], {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              DATABASE_URL: prismaDatabaseUrl
+            }
+          });
+
+          const pythonPath = await createPythonEnv(tmpDir, "3.12", ["sqlmodel", "psycopg[binary]"]);
+          const generatedSqlmodelDir = path.join(tmpDir, "generated", "sqlmodel");
+          const prismaClientUrl = pathToFileURL(path.join(tmpDir, "generated", "prisma", "client.ts")).href;
+
+          await runPythonScript(
+            tmpDir,
+            pythonPath,
+            `
+import sys
+from sqlalchemy import inspect, text
+from sqlmodel import SQLModel, create_engine
+
+sys.path.insert(0, ${JSON.stringify(generatedSqlmodelDir)})
+import models
+
+engine = create_engine(${JSON.stringify(pythonDatabaseUrl)})
+
+with engine.begin() as connection:
+    connection.execute(text("CREATE SCHEMA IF NOT EXISTS tenant_a"))
+
+SQLModel.metadata.create_all(engine)
+inspector = inspect(engine)
+tables = set(inspector.get_table_names(schema="tenant_a"))
+assert {"users", "tags", "projects", "posts", "_PostToTag"}.issubset(tables), tables
+foreign_keys = inspector.get_foreign_keys("posts", schema="tenant_a")
+assert any(key["name"] == "posts_author_fk" for key in foreign_keys), foreign_keys
+assert any(key["name"] == "posts_project_fk" for key in foreign_keys), foreign_keys
+author_fk = next(key for key in foreign_keys if key["name"] == "posts_author_fk")
+project_fk = next(key for key in foreign_keys if key["name"] == "posts_project_fk")
+assert author_fk.get("options", {}).get("ondelete") == "CASCADE", author_fk
+assert author_fk.get("options", {}).get("onupdate") == "RESTRICT", author_fk
+assert project_fk.get("options", {}).get("ondelete") == "CASCADE", project_fk
+assert project_fk.get("options", {}).get("onupdate") == "RESTRICT", project_fk
+            `,
+            {
+              PY_DATABASE_URL: pythonDatabaseUrl
+            }
+          );
+
+          const prismaResult = await runTsxScript(
+            `
+import { PrismaPg } from "@prisma/adapter-pg";
+
+const { PrismaClient } = await import(${JSON.stringify(prismaClientUrl)});
+
+const prisma = new PrismaClient({
+  adapter: new PrismaPg(process.env.DATABASE_URL!)
+});
+
+function normalizePosts(posts: any[]) {
+  return posts.map((post) => ({
+    title: post.title,
+    author: { email: post.author.email },
+    project: {
+      key: [post.project.leftId, post.project.rightId],
+      name: post.project.name
+    },
+    tags: post.tags.map((tag: any) => tag.label),
+    keywords: post.keywords,
+    phases: post.phases,
+    channels: post.channels
+  }));
+}
+
+async function main() {
+  try {
+    const [authorA, authorB] = await Promise.all([
+      prisma.user.create({ data: { email: "author-a@example.com" } }),
+      prisma.user.create({ data: { email: "author-b@example.com" } })
+    ]);
+
+    const [urgent, backend, beta] = await Promise.all([
+      prisma.tag.create({ data: { label: "urgent" } }),
+      prisma.tag.create({ data: { label: "backend" } }),
+      prisma.tag.create({ data: { label: "beta" } })
+    ]);
+
+    await prisma.project.createMany({
+      data: [
+        { leftId: 10, rightId: 20, name: "Platform" },
+        { leftId: 11, rightId: 21, name: "Growth" }
+      ]
+    });
+
+    const firstPost = await prisma.post.create({
+      data: {
+        authorId: authorA.id,
+        projectLeft: 10,
+        projectRight: 20,
+        title: "Ship schema sync",
+        keywords: ["orm", "sync", "sqlmodel"],
+        phases: ["DRAFT", "REVIEW"],
+        channels: ["ALPHA", "BETA"],
+        tags: {
+          connect: [{ id: urgent.id }, { id: backend.id }]
+        }
+      }
+    });
+
+    await prisma.post.create({
+      data: {
+        authorId: authorB.id,
+        projectLeft: 11,
+        projectRight: 21,
+        title: "Public launch",
+        keywords: ["release", "docs"],
+        phases: ["PUBLISHED"],
+        channels: ["STABLE"],
+        tags: {
+          connect: [{ id: beta.id }]
+        }
+      }
+    });
+
+    const beforeUpdate = firstPost.updatedAt.toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const updated = await prisma.post.update({
+      where: { id: firstPost.id },
+      data: {
+        title: "Ship schema sync v2",
+        keywords: ["orm", "sync", "sqlmodel", "prisma"]
+      }
+    });
+    const prismaUpdatedAtChanged = updated.updatedAt.toISOString() !== beforeUpdate;
+
+    const posts = await prisma.post.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        title: true,
+        author: { select: { email: true } },
+        project: { select: { leftId: true, rightId: true, name: true } },
+        tags: { orderBy: { label: "asc" }, select: { label: true } },
+        keywords: true,
+        phases: true,
+        channels: true
+      }
+    });
+
+    console.log(JSON.stringify({
+      updatedAtChanged: prismaUpdatedAtChanged,
+      posts: normalizePosts(posts)
+    }));
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+await main();
+            `,
+            {
+              DATABASE_URL: prismaDatabaseUrl
+            }
+          );
+
+          const sqlmodelResult = await runPythonScript(
+            tmpDir,
+            pythonPath,
+            `
+import json
+import sys
+import time
+from sqlalchemy import select
+from sqlmodel import Session, create_engine
+
+sys.path.insert(0, ${JSON.stringify(generatedSqlmodelDir)})
+import models
+
+engine = create_engine(${JSON.stringify(pythonDatabaseUrl)})
+
+def unwrap_entity(value):
+    if hasattr(value, "_mapping"):
+        first = tuple(value)
+        if len(first) == 1:
+            return first[0]
+    return value
+
+with Session(engine) as session:
+    first_post = unwrap_entity(session.exec(
+        select(models.Post).where(models.Post.title == "Ship schema sync v2")
+    ).one())
+
+    posts = [unwrap_entity(row) for row in session.exec(select(models.Post).order_by(models.Post.id.asc())).all()]
+
+    payload = []
+    for post in posts:
+        author = post.author
+        project = post.project
+        tags = sorted(tag.label for tag in post.tags)
+        payload.append(
+            {
+                "title": post.title,
+                "author": {"email": author.email},
+                "project": {
+                    "key": [project.leftId, project.rightId],
+                    "name": project.name,
+                },
+                "tags": tags,
+                "keywords": list(post.keywords),
+                "phases": [phase.value for phase in post.phases],
+                "channels": [channel.value for channel in post.channels],
+            }
+        )
+
+    before_update = first_post.updatedAt.isoformat()
+    time.sleep(1.1)
+    first_post.title = "Ship schema sync v3"
+    session.add(first_post)
+    session.commit()
+    session.refresh(first_post)
+    sqlmodel_updated_at_changed = first_post.updatedAt.isoformat() != before_update
+
+    print(json.dumps({
+        "updatedAtChanged": sqlmodel_updated_at_changed,
+        "posts": payload
+    }))
+            `,
+            {
+              PY_DATABASE_URL: pythonDatabaseUrl
+            }
+          );
+
+          const prismaPayload = JSON.parse(prismaResult) as {
+            updatedAtChanged: boolean;
+            posts: unknown[];
+          };
+          const sqlmodelPayload = JSON.parse(sqlmodelResult) as {
+            updatedAtChanged: boolean;
+            posts: unknown[];
+          };
+
+          expect(prismaPayload.updatedAtChanged).toBe(true);
+          expect(sqlmodelPayload.updatedAtChanged).toBe(true);
+          expect(sqlmodelPayload.posts).toEqual(prismaPayload.posts);
+        } finally {
+          safeRemoveContainer(containerName);
+        }
+      });
+    },
+    300_000
+  );
 });
 
 async function generateIntoWorkspace(tmpDir: string, schemaTemplate: string): Promise<string> {
@@ -931,7 +1292,8 @@ async function createPythonEnv(
   const venvPath = path.join(tmpDir, `.venv-${safeVersion}`);
   const pythonPath = path.join(venvPath, "bin", "python");
   run("uv", ["venv", venvPath, "--python", pythonVersion]);
-  run("uv", ["pip", "install", "--python", pythonPath, ...packages]);
+  const resolvedPackages = packages.map((pkg) => (pkg === "sqlmodel" ? `sqlmodel==${TESTED_SQLMODEL_VERSION}` : pkg));
+  run("uv", ["pip", "install", "--python", pythonPath, ...resolvedPackages]);
   return pythonPath;
 }
 

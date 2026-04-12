@@ -11,6 +11,7 @@ export function collectCompatibilityDiagnostics(
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const provider = metadata.provider;
+  const indexes = dmmf.datamodel.indexes ?? [];
 
   if (!SUPPORTED_PROVIDERS.has(provider)) {
     diagnostics.push({
@@ -21,7 +22,43 @@ export function collectCompatibilityDiagnostics(
     });
   }
 
+  if (metadata.relationMode && metadata.relationMode !== "foreignKeys") {
+    diagnostics.push({
+      code: "UNSUPPORTED_RELATION_MODE_PRISMA",
+      severity: "error",
+      message: `Datasource relationMode '${metadata.relationMode}' is Prisma-client-only behavior and cannot be emitted 1:1 via SQLModel.`,
+      suggestion: "Use relationMode = \"foreignKeys\" or remove the relationMode setting."
+    });
+  }
+
+  diagnostics.push(...(metadata.unsupportedDiagnostics ?? []));
+
   validateTypeNameCollisions(dmmf, diagnostics);
+
+  for (const [modelName, modelMetadata] of metadata.models.entries()) {
+    if (modelMetadata.ignored) {
+      diagnostics.push({
+        code: "UNSUPPORTED_IGNORE",
+        severity: "error",
+        model: modelName,
+        location: metadata.modelLocations.get(modelName),
+        message: "@@ignore is Prisma-client-only behavior and is not emitted in generated SQLModel table models.",
+        suggestion: "Remove @@ignore or exclude the model from SQLModel generation another way."
+      });
+    }
+
+    for (const fieldName of modelMetadata.ignoredFields) {
+      diagnostics.push({
+        code: "UNSUPPORTED_IGNORE",
+        severity: "error",
+        model: modelName,
+        field: fieldName,
+        location: metadata.fieldLocations.get(modelName)?.get(fieldName),
+        message: "@ignore is Prisma-client-only behavior and is not emitted in generated SQLModel table models.",
+        suggestion: "Remove @ignore or exclude the field from generation another way."
+      });
+    }
+  }
 
   for (const model of dmmf.datamodel.models) {
     const modelMetadata = metadata.models.get(model.name);
@@ -30,14 +67,16 @@ export function collectCompatibilityDiagnostics(
     }
 
     validateFieldNameCollisions(model, diagnostics, metadata);
+    validateAdvancedIndexSupport(model.name, indexes, diagnostics, metadata);
 
-    const compositePrimaryKey = modelMetadata.constraints.find((constraint) => constraint.kind === "primary_key");
+    const compositePrimaryKey = indexes.find(
+      (constraint: any) => constraint.model === model.name && constraint.type === "id"
+    );
 
     for (const field of model.fields) {
       if (field.kind === "scalar" || field.kind === "enum") {
         validateScalarLikeField(provider, model.name, field, diagnostics, metadata);
       }
-
       if (isImplicitRelationField(field)) {
         const targetModel = dmmf.datamodel.models.find((candidate: any) => candidate.name === field.type);
         const hasJoinModel = Boolean(
@@ -50,16 +89,40 @@ export function collectCompatibilityDiagnostics(
         );
 
         if (!hasJoinModel && field.isList) {
-          diagnostics.push({
-            code: "UNSUPPORTED_IMPLICIT_MANY_TO_MANY",
-            severity: "error",
-            model: model.name,
-            field: field.name,
-            location: metadata.fieldLocations.get(model.name)?.get(field.name),
-            message: "Implicit many-to-many Prisma relations are not supported in SQLModel output.",
-            suggestion: "Define an explicit join model and replace the implicit many-to-many relation with two one-to-many relations."
-          });
+          const backRelation = targetModel?.fields.find(
+            (candidate: any) =>
+              candidate.kind === "object" &&
+              candidate.type === model.name &&
+              candidate.relationName === field.relationName
+          );
+          const modelPkCount = countPrimaryKeyFields(model, indexes);
+          const targetPkCount = targetModel ? countPrimaryKeyFields(targetModel, indexes) : 0;
+          if (field.type === model.name) {
+            diagnostics.push({
+              code: "UNSUPPORTED_IMPLICIT_M2M_SHAPE",
+              severity: "error",
+              model: model.name,
+              field: field.name,
+              location: metadata.fieldLocations.get(model.name)?.get(field.name),
+              message: "Self implicit many-to-many relations are not emitted deterministically in SQLModel output.",
+              suggestion: "Define an explicit join model for the self relation."
+            });
+            continue;
+          }
+          if (!backRelation?.isList || modelPkCount !== 1 || targetPkCount !== 1) {
+            diagnostics.push({
+              code: "UNSUPPORTED_IMPLICIT_M2M_SHAPE",
+              severity: "error",
+              model: model.name,
+              field: field.name,
+              location: metadata.fieldLocations.get(model.name)?.get(field.name),
+              message: "This implicit many-to-many relation shape cannot be emitted 1:1 in SQLModel output.",
+              suggestion: "Use an explicit join model with concrete foreign keys."
+            });
+            continue;
+          }
         }
+
       }
     }
 
@@ -68,8 +131,8 @@ export function collectCompatibilityDiagnostics(
     }
 
     if (compositePrimaryKey && compositePrimaryKey.fields.length > 1) {
-      const defaulted = compositePrimaryKey.fields.some((fieldName) => {
-        const field = model.fields.find((candidate: any) => candidate.name === fieldName);
+      const defaulted = compositePrimaryKey.fields.some((entry: any) => {
+        const field = model.fields.find((candidate: any) => candidate.name === entry.name);
         return field?.hasDefaultValue;
       });
 
@@ -87,6 +150,44 @@ export function collectCompatibilityDiagnostics(
   }
 
   return diagnostics;
+}
+
+function validateAdvancedIndexSupport(
+  modelName: string,
+  indexes: any[],
+  diagnostics: Diagnostic[],
+  metadata: AstMetadata
+): void {
+  for (const entry of indexes) {
+    if (entry.model !== modelName) {
+      continue;
+    }
+
+    if (typeof entry.algorithm === "string" && entry.algorithm.length > 0) {
+      diagnostics.push({
+        code: "UNSUPPORTED_ADVANCED_INDEX",
+        severity: "error",
+        model: modelName,
+        location: metadata.modelLocations.get(modelName),
+        message: `Prisma index algorithm '${entry.algorithm}' does not map 1:1 to generated SQLModel metadata.`,
+        suggestion: "Use Prisma's default index behavior or manage the advanced index manually in migrations."
+      });
+    }
+
+    for (const field of entry.fields ?? []) {
+      if (typeof field.operatorClass === "string" && field.operatorClass.length > 0) {
+        diagnostics.push({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          severity: "error",
+          model: modelName,
+          field: field.name,
+          location: metadata.fieldLocations.get(modelName)?.get(field.name) ?? metadata.modelLocations.get(modelName),
+          message: `Prisma operator class '${field.operatorClass}' does not map 1:1 to generated SQLModel metadata.`,
+          suggestion: "Use plain field indexes in generated models and manage operator classes manually in migrations."
+        });
+      }
+    }
+  }
 }
 
 function validateScalarLikeField(
@@ -158,6 +259,14 @@ function isImplicitRelationField(field: any): boolean {
 
 function getRelationFieldCount(fields: unknown): number {
   return Array.isArray(fields) ? fields.length : 0;
+}
+
+function countPrimaryKeyFields(model: any, indexes: any[]): number {
+  const idIndex = indexes.find((entry: any) => entry.model === model.name && entry.type === "id");
+  if (idIndex) {
+    return idIndex.fields.length;
+  }
+  return model.fields.filter((field: any) => field.isId).length;
 }
 
 function validateTypeNameCollisions(dmmf: any, diagnostics: Diagnostic[]): void {

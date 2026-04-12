@@ -10,7 +10,7 @@ exports[`golden output > matches the snapshot for mapped_enum 1`] = `
 from enum import Enum
 from typing import Any, Optional
 from sqlmodel import Field, Relationship, SQLModel
-from sqlalchemy import Column, Enum as SAEnum, ForeignKey, Integer
+from sqlalchemy import Column, Enum as SAEnum, Integer
 
 class Role(str, Enum):
     ADMIN = 'ADMIN'
@@ -19,7 +19,7 @@ class Role(str, Enum):
 class User(SQLModel, table=True):
     __tablename__ = 'users'
     id: int | None = Field(sa_column=Column(Integer(), primary_key=True, nullable=False, autoincrement=True), default=None)
-    role: Role = Field(sa_column=Column(SAEnum(Role, name='role'), nullable=False), default=Role.USER)
+    role: Role = Field(sa_column=Column(SAEnum(Role, name='Role'), nullable=False), default=Role.USER)
 "
 `;
 
@@ -52,7 +52,7 @@ exports[`golden output > matches the snapshot for simple 1`] = `
 
 from typing import Any, Optional
 from sqlmodel import Field, Relationship, SQLModel
-from sqlalchemy import Column, ForeignKey, Integer
+from sqlalchemy import Column, Integer
 from sqlalchemy.dialects.postgresql import VARCHAR
 
 class User(SQLModel, table=True):

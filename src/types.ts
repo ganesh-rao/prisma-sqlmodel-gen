@@ -23,9 +23,15 @@ export type GeneratorInput = {
 
 export type ConstraintKind = "primary_key" | "unique" | "index";
 
+export type ConstraintFieldDefinition = {
+  name: string;
+  sort?: "asc" | "desc";
+  length?: number;
+};
+
 export type ConstraintDefinition = {
   kind: ConstraintKind;
-  fields: string[];
+  fields: ConstraintFieldDefinition[];
   name?: string;
 };
 
@@ -49,10 +55,8 @@ export type ScalarFieldDefinition = {
   defaultValue?: unknown;
   isUpdatedAt: boolean;
   nativeType?: NativeType;
-  foreignKey?: {
-    targetModel: string;
-    targetField: string;
-  };
+  foreignKey?: ForeignKeyDefinition;
+  defaultKind?: "scalar" | "function";
 };
 
 export type RelationFieldDefinition = {
@@ -67,6 +71,20 @@ export type RelationFieldDefinition = {
   relationToFields: string[];
   backPopulates: string;
   foreignKeyFieldNames: string[];
+  onDelete?: string;
+  onUpdate?: string;
+  foreignKeyConstraintName?: string;
+  linkModelName?: string;
+  isImplicitManyToMany?: boolean;
+};
+
+export type ForeignKeyDefinition = {
+  name?: string;
+  fields: string[];
+  targetModel: string;
+  targetFields: string[];
+  onDelete?: string;
+  onUpdate?: string;
 };
 
 export type EnumDefinition = {
@@ -83,13 +101,17 @@ export type ModelDefinition = {
   name: string;
   pythonName: string;
   tableName: string;
+  tableSchema?: string;
+  isGeneratedLinkModel?: boolean;
   scalarFields: ScalarFieldDefinition[];
   relationFields: RelationFieldDefinition[];
   constraints: ConstraintDefinition[];
+  foreignKeys: ForeignKeyDefinition[];
 };
 
 export type SchemaDefinition = {
   provider: SupportedProvider;
+  relationMode?: string;
   enums: EnumDefinition[];
   models: ModelDefinition[];
 };

@@ -5,11 +5,13 @@
 
 Generate Python `SQLModel` table models from a Prisma schema.
 
+## Who needs this?
+
+Use this package if your TypeScript app uses Prisma, but another Python service needs matching `SQLModel` models for the same database. It is for teams that want Prisma to stay as the single source of truth instead of hand-maintaining the same schema twice.
+
 ## What it does
 
-`prisma-sqlmodel-gen` is a Prisma 7 custom generator written in TypeScript. It reads `schema.prisma`, uses Prisma's DMMF plus Prisma schema parsing, and emits Python `SQLModel` table models without database introspection.
-
-The generator is schema-driven. It does not inspect a live database.
+`prisma-sqlmodel-gen` reads your Prisma schema file and generates Python `SQLModel` classes from it. It works from the schema file itself, so it does not need to inspect a live database.
 
 ## Quick start
 
@@ -101,9 +103,9 @@ class User(SQLModel, table=True):
 Runtime targets:
 
 - Prisma 7
-- Node 20+
+- Node 22+
 - Python 3.11+
-- current `SQLModel`
+- `SQLModel 0.0.38`
 
 Datasource targets:
 
@@ -112,9 +114,9 @@ Datasource targets:
 
 Validation matrix:
 
-- Python 3.11 + PostgreSQL
-- Python 3.12 + PostgreSQL
-- Python 3.12 + MySQL
+- Python 3.11 + PostgreSQL + `SQLModel 0.0.38`
+- Python 3.12 + PostgreSQL + `SQLModel 0.0.38`
+- Python 3.12 + MySQL + `SQLModel 0.0.38`
 
 Generated artifacts:
 
@@ -128,14 +130,21 @@ Mode:
 
 ## Supported features
 
-Supported patterns include:
+Fully supported relational-schema features:
 
 - mapped tables and columns via `@@map` and `@map`
+- PostgreSQL `@@schema`
 - enums
+- PostgreSQL scalar lists and enum lists
 - explicit one-to-one and one-to-many relations
-- explicit join models
+- explicit many-to-many via join model
+- implicit many-to-many via synthesized `PrismaImplicitLink_*` models
+- relation `map`, `onDelete`, and `onUpdate`
+- named/composite foreign keys
 - named indexes and unique constraints
-- PostgreSQL and MySQL native types where Prisma exposes them directly
+- MySQL index `length`
+- index `sort` where SQLAlchemy can represent it directly
+- `@updatedAt`
 - defaults such as `autoincrement()`, `uuid()`, `now()`, and `dbgenerated(...)` when they map cleanly
 
 Feature matrix:
@@ -143,44 +152,64 @@ Feature matrix:
 | Feature | Status |
 | --- | --- |
 | `@map` / `@@map` | Supported |
+| `@@schema` on PostgreSQL | Supported |
 | `@id` | Supported |
-| `@@id` explicit join-model composite keys | Supported |
+| `@@id` composite keys | Supported |
 | `@unique` / `@@unique` | Supported |
-| `@@index` | Supported |
+| `@@index` basic indexes | Supported |
 | Prisma enums | Supported |
+| PostgreSQL scalar lists | Supported |
+| PostgreSQL enum lists | Supported |
 | Explicit one-to-one | Supported |
 | Explicit one-to-many | Supported |
 | Explicit many-to-many via join model | Supported |
+| Implicit many-to-many | Supported via synthesized link model |
 | Multiple named relations between same model pair | Supported |
 | Self-relations | Supported |
+| Relation `map` / `onDelete` / `onUpdate` | Supported |
+| Composite foreign keys | Supported |
+| `@updatedAt` | Supported |
 | PostgreSQL native types used by Prisma SQL schemas | Supported where mapped directly |
 | MySQL native types used by Prisma SQL schemas | Supported where mapped directly |
+| MySQL index `length` | Supported |
+| Index `sort` | Supported where mapped directly |
 | `autoincrement()` | Supported |
 | `uuid()` | Supported |
 | `now()` | Supported |
 | `dbgenerated(...)` | Supported where SQLAlchemy server defaults can represent it |
 
-## Known limitations
+Supported with provider limitations:
 
-These are intentional hard-fail or out-of-scope cases for `0.1.x`:
+| Feature | Status |
+| --- | --- |
+| Scalar lists | PostgreSQL only |
+| Enum lists | PostgreSQL only |
+| `@@schema` | PostgreSQL only |
+| Dialect native types | Limited to PostgreSQL/MySQL direct SQLAlchemy mappings |
 
-- implicit Prisma many-to-many relations
-- Prisma client-side defaults such as `cuid()`, `ulid()`, and `nanoid()`
-- Prisma `Unsupported` scalar fields
-- scalar lists outside PostgreSQL
-- enum lists outside PostgreSQL
-- features that require Python-only metadata not represented in Prisma
-- non-PostgreSQL / non-MySQL providers
-
-Unsupported matrix:
+Intentionally unsupported non-isomorphic features:
 
 | Feature | Behavior |
 | --- | --- |
-| Implicit many-to-many | Hard fail |
+| `relationMode = "prisma"` | Hard fail |
+| `@ignore` / `@@ignore` | Hard fail |
 | `Unsupported(...)` scalar fields | Hard fail |
 | `cuid()` / `ulid()` / `nanoid()` defaults | Hard fail |
-| SQLite / SQL Server / CockroachDB / MongoDB | Hard fail |
-| Features that need Python-only metadata absent from Prisma | Out of scope for v1 |
+| Advanced index algorithms / operator classes / expression-style indexes | Hard fail |
+| Providers outside PostgreSQL / MySQL | Hard fail |
+| Features that need Python-only metadata absent from Prisma | Out of scope |
+
+## Known limitations
+
+The generator stays in strict mode by default. If a Prisma feature cannot be represented 1:1 in SQLModel/SQLAlchemy metadata or ORM behavior, generation fails instead of degrading silently.
+
+Examples:
+
+- scalar lists outside PostgreSQL
+- enum lists outside PostgreSQL
+- advanced PostgreSQL index forms such as operator classes or custom index algorithms
+- provider-specific features outside PostgreSQL/MySQL scope
+- Prisma-client-only behaviors such as `relationMode = "prisma"` or `@ignore`
 
 ## Diagnostics
 
@@ -194,17 +223,17 @@ Failures include:
 Example:
 
 ```text
-ERROR UNSUPPORTED_IMPLICIT_MANY_TO_MANY (Post.tags) [line 12, col 3]:
-Implicit many-to-many Prisma relations are not supported in SQLModel output.
-Suggestion: Define an explicit join model and replace the implicit many-to-many relation with two one-to-many relations.
+ERROR UNSUPPORTED_ADVANCED_INDEX (User.value) [line 7, col 3]:
+Prisma index field modifier 'ops' does not map 1:1 to generated SQLModel metadata.
+Suggestion: Use only supported sort/length modifiers or manage the advanced index manually in migrations.
 ```
 
 ## Troubleshooting
 
-- `UNSUPPORTED_IMPLICIT_MANY_TO_MANY`
-  Replace the implicit relation with an explicit join model.
 - `UNSUPPORTED_CLIENT_SIDE_DEFAULT`
   Replace client-side defaults such as `cuid()` with `uuid()` or a database-generated default.
+- `UNSUPPORTED_ADVANCED_INDEX`
+  Keep advanced index algorithms, operator classes, or expression-style indexes in Prisma migrations instead of generated SQLModel metadata.
 - `PYTHON_FIELD_NAME_COLLISION`
   Rename Prisma fields that collapse to the same Python identifier after sanitization.
 - stale output in `--check`
@@ -212,12 +241,14 @@ Suggestion: Define an explicit join model and replace the implicit many-to-many 
 
 ## Python runtime notes
 
-The generated code assumes a current `SQLModel` release compatible with Python 3.11+ and SQLAlchemy 2.x style imports used by SQLModel.
+If you use a different `SQLModel` version, treat it as unvalidated until you run this project's integration suite against that version.
+
+The generated code is validated against `SQLModel 0.0.38` on Python 3.11+ with the SQLAlchemy 2.x dependency range that `SQLModel 0.0.38` resolves.
 
 Your Python application still needs to install its own runtime dependencies, for example:
 
 ```bash
-pip install sqlmodel sqlalchemy psycopg[binary]
+pip install "sqlmodel==0.0.38" psycopg[binary]
 ```
 
 Choose the database driver appropriate for your environment.
