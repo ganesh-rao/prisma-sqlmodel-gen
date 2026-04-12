@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1
+
+- regenerate and commit the synchronized `package-lock.json` metadata after raising the Node engine requirement so GitHub Actions `npm ci` stays in sync with `package.json`
+- disable `setup-uv` dependency caching in CI and publish workflows because this repository does not ship a Python lockfile or requirements file, avoiding persistent cache warnings in GitHub Actions
+- keep the release workflow aligned to the current Node 24 / npm 11 toolchain used by the repository
+
 ## 0.2.0
 
 - expand Prisma-to-SQLModel feature coverage beyond the original core relational subset, including PostgreSQL `@@schema`, referential actions, named/composite foreign keys, implicit many-to-many synthesis, PostgreSQL scalar and enum lists, richer native-type mapping, and `@updatedAt` support
