@@ -64,7 +64,9 @@ export function extractAstMetadata(datamodel: string, dmmf: any): AstMetadata {
       ignoredFields: extractIgnoredFields(block),
       relationFields: extractRelationFieldMetadata(block)
     });
-    unsupportedDiagnostics.push(...extractUnsupportedIndexDiagnostics(block, modelName, scannedModelLocation, scannedFieldLocations));
+    unsupportedDiagnostics.push(
+      ...extractUnsupportedIndexDiagnostics(block, modelName, provider, scannedModelLocation, scannedFieldLocations)
+    );
 
     if (scannedModelLocation) {
       modelLocations.set(modelName, scannedModelLocation);
@@ -193,6 +195,7 @@ function extractRelationFieldMetadata(
 function extractUnsupportedIndexDiagnostics(
   block: Extract<Block, { type: "model" }> | undefined,
   modelName: string,
+  provider: SupportedProvider,
   modelLocation: SourceLocation | undefined,
   fieldLocations: Map<string, SourceLocation>
 ): Diagnostic[] {
@@ -215,7 +218,7 @@ function extractUnsupportedIndexDiagnostics(
       ? normalizeStringLiteral(typeValue.value) ?? String(typeValue.value)
       : undefined;
 
-    if (indexType) {
+    if (indexType && !isSupportedIndexType(provider, indexType)) {
       diagnostics.push({
         code: "UNSUPPORTED_ADVANCED_INDEX",
         severity: "error",
@@ -277,6 +280,12 @@ function extractUnsupportedIndexDiagnostics(
   }
 
   return diagnostics;
+}
+
+const SUPPORTED_POSTGRES_INDEX_TYPES = new Set(["btree", "brin", "gin", "hash", "spgist"]);
+
+function isSupportedIndexType(provider: SupportedProvider, indexType: string): boolean {
+  return provider === "postgresql" && SUPPORTED_POSTGRES_INDEX_TYPES.has(indexType.toLowerCase());
 }
 
 function isKeyValueAttributeArgument(value: unknown): value is { type: "keyValue"; key: string; value: unknown } {

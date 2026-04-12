@@ -139,7 +139,8 @@ function extractConstraints(modelName: string, indexes: any[]): ConstraintDefini
         sort: typeof field.sortOrder === "string" ? normalizeSort(field.sortOrder) : undefined,
         length: typeof field.length === "number" ? field.length : undefined
       })),
-      name: entry.dbName ?? undefined
+      name: entry.dbName ?? undefined,
+      algorithm: typeof entry.algorithm === "string" ? entry.algorithm : undefined
     }));
 }
 

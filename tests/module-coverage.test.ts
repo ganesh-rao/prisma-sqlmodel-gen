@@ -463,6 +463,50 @@ describe("compatibility diagnostics", () => {
     );
   });
 
+  it("flags unsupported DMMF index algorithms that are not explicitly supported", () => {
+    const metadata = {
+      provider: "postgresql",
+      relationMode: undefined,
+      models: new Map([["User", makeModelMetadata()]]),
+      modelLocations: new Map([["User", { line: 7, column: 1 }]]),
+      fieldLocations: new Map([["User", new Map()]]),
+      unsupportedDiagnostics: []
+    } as any;
+
+    const diagnostics = compatibility.collectCompatibilityDiagnostics(
+      {
+        datamodel: {
+          indexes: [
+            { model: "User", type: "id", fields: [{ name: "id" }] },
+            { model: "User", type: "normal", algorithm: "Bloom", fields: [{ name: "value" }] }
+          ],
+          models: [
+            {
+              name: "User",
+              fields: [
+                { kind: "scalar", name: "id", type: "Int", isList: false, isRequired: true, isId: true, isUnique: false, hasDefaultValue: false },
+                { kind: "scalar", name: "value", type: "String", isList: false, isRequired: true, isId: false, isUnique: false, hasDefaultValue: false }
+              ]
+            }
+          ],
+          enums: []
+        }
+      },
+      metadata,
+      true
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "UNSUPPORTED_ADVANCED_INDEX",
+          model: "User",
+          message: expect.stringContaining("algorithm 'Bloom'")
+        })
+      ])
+    );
+  });
+
   it("covers advanced index diagnostics from DMMF and AST metadata", () => {
     const datamodel = `datasource db {
   provider = "postgresql"
@@ -520,7 +564,6 @@ model User {
 
     expect(diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User" }),
         expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", field: "value" }),
         expect.objectContaining({
           code: "UNSUPPORTED_ADVANCED_INDEX",
@@ -530,10 +573,67 @@ model User {
         })
       ])
     );
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", message: expect.stringContaining("algorithm 'Gin'") })
+      ])
+    );
   });
 });
 
 describe("normalize and render branches", () => {
+  it("leaves unsupported PostgreSQL index algorithms without a using clause in renderer fallback paths", () => {
+    const rendered = renderPythonModule(
+      {
+        provider: "postgresql",
+        relationMode: undefined,
+        enums: [],
+        models: [
+          {
+            name: "Example",
+            pythonName: "Example",
+            tableName: "example",
+            scalarFields: [
+              {
+                kind: "scalar",
+                name: "id",
+                pythonName: "id",
+                columnName: "id",
+                prismaType: "Int",
+                pythonType: "int",
+                isList: false,
+                isNullable: false,
+                isId: true,
+                isUnique: false,
+                hasDefaultValue: false,
+                isUpdatedAt: false
+              }
+            ],
+            relationFields: [],
+            constraints: [
+              {
+                kind: "index",
+                name: "example_data_gist",
+                algorithm: "Bloom",
+                fields: [{ name: "id" }]
+              }
+            ],
+            foreignKeys: []
+          }
+        ]
+      },
+      {
+        moduleName: "models.py",
+        headerComment: false,
+        schemaHash: "deadbeef1234",
+        packageVersion: PACKAGE_VERSION
+      }
+    );
+
+    expect(rendered).toContain("Index('example_data_gist', 'id')");
+    expect(rendered).not.toContain("postgresql_using");
+  });
+
   it("covers normalize fallbacks and deduplication", () => {
     const metadata = {
       provider: "postgresql",
@@ -2033,7 +2133,7 @@ model User {
     );
   });
 
-  it("captures unsupported advanced index metadata from the AST", () => {
+  it("captures unsupported operator-class index metadata from the AST while allowing PostgreSQL GIN indexes", () => {
     const datamodel = `datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -2054,8 +2154,12 @@ model User {
 
     expect(metadata.unsupportedDiagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User" }),
         expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", field: "value" })
+      ])
+    );
+    expect(metadata.unsupportedDiagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "UNSUPPORTED_ADVANCED_INDEX", model: "User", message: expect.stringContaining("type 'Gin'") })
       ])
     );
   });

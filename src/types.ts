@@ -33,6 +33,7 @@ export type ConstraintDefinition = {
   kind: ConstraintKind;
   fields: ConstraintFieldDefinition[];
   name?: string;
+  algorithm?: string;
 };
 
 export type NativeType = {

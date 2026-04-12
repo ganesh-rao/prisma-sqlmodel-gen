@@ -375,6 +375,49 @@ model User {
 
   @@index([value(ops: raw("gin_trgm_ops"))], type: Gin)
 }`;
+const postgresIndexMethodSchema = `datasource db {
+  provider = "postgresql"
+}
+
+generator sqlmodel {
+  provider = "prisma-sqlmodel-gen"
+  output   = "./generated/sqlmodel"
+}
+
+model GinExample {
+  id   BigInt @id @default(autoincrement())
+  data Json
+
+  @@index([data], map: "gin_example_data", type: Gin)
+}
+
+model HashExample {
+  id   BigInt @id @default(autoincrement())
+  data Json
+
+  @@index([data], map: "hash_example_data", type: Hash)
+}
+
+model BrinExample {
+  id        BigInt   @id @default(autoincrement())
+  createdAt DateTime @default(now())
+
+  @@index([createdAt], map: "brin_example_created_at", type: Brin)
+}
+
+model SpGistExample {
+  id   BigInt @id @default(autoincrement())
+  slug String @db.VarChar(255)
+
+  @@index([slug], map: "spgist_example_slug", type: SpGist)
+}
+
+model BTreeExample {
+  id         BigInt @id @default(autoincrement())
+  externalId BigInt
+
+  @@index([externalId], map: "btree_example_external_id", type: BTree)
+}`;
 
 const expressionIndexSchema = `datasource db {
   provider = "postgresql"
@@ -412,6 +455,8 @@ describe("generateSqlModel", () => {
     expect(rendered).toContain("displayName: str | None = Field(sa_column=Column('display_name', VARCHAR(120), nullable=True), default=None)");
     expect(rendered).toContain("authorId: int = Field(sa_column=Column('author_id', Integer(), ForeignKey('users.id'), nullable=False))");
     expect(rendered).toContain("createdAt: datetime | None = Field(sa_column=Column(TIMESTAMP(precision=6, timezone=True), nullable=False, server_default=func.now()), default=None)");
+    expect(rendered).toContain("from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, VARCHAR");
+    expect(rendered).toContain("metadata: Any | None = Field(sa_column=Column(JSONB, nullable=True), default=None)");
     expect(rendered).toContain("role: Role = Field(sa_column=Column(SAEnum(Role, name='Role'), nullable=False), default=Role.USER)");
     expect(rendered).toContain("__table_args__ = (Index('posts_author_id_idx', 'author_id'),)");
     expect(rendered).toContain("profile: Optional['Profile'] = Relationship(back_populates='user', sa_relationship_kwargs={\"foreign_keys\": 'Profile.userId'})");
@@ -585,6 +630,18 @@ describe("generateSqlModel", () => {
     await expect(generateSqlModel(await buildInput(advancedIndexSchema, outputDir))).rejects.toThrow(
       "Schema contains unsupported constructs."
     );
+  });
+
+  it("renders supported PostgreSQL index methods", async () => {
+    const outputDir = path.join(tempDir, "postgres-index-methods");
+    const result = await generateSqlModel(await buildInput(postgresIndexMethodSchema, outputDir));
+    expect(result.diagnostics).toHaveLength(0);
+    const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
+    expect(rendered).toContain("Index('gin_example_data', 'data', postgresql_using='gin')");
+    expect(rendered).toContain("Index('hash_example_data', 'data', postgresql_using='hash')");
+    expect(rendered).toContain("Index('brin_example_created_at', 'createdAt', postgresql_using='brin')");
+    expect(rendered).toContain("Index('spgist_example_slug', 'slug', postgresql_using='spgist')");
+    expect(rendered).toContain("Index('btree_example_external_id', 'externalId', postgresql_using='btree')");
   });
 
   it("fails on expression-style index definitions discovered from the Prisma AST", async () => {

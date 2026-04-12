@@ -128,7 +128,11 @@ function collectImports(schema: SchemaDefinition, imports: ImportState): void {
         imports.standard.add("from datetime import datetime");
       }
       if (field.prismaType === "Json") {
-        imports.sqlalchemy.add("JSON");
+        if (schema.provider === "postgresql") {
+          imports.postgres.add("JSONB");
+        } else {
+          imports.sqlalchemy.add("JSON");
+        }
       }
       if (field.isUpdatedAt) {
         imports.sqlalchemy.add("func");
@@ -364,6 +368,10 @@ function renderConstraintCall(
       ...(constraint.name ? [quotePythonString(constraint.name)] : []),
       ...fieldArgs
     ];
+    const postgresUsing = buildPostgresUsingKwarg(constraint, schema.provider);
+    if (postgresUsing) {
+      args.push(postgresUsing);
+    }
     return `Index(${args.join(", ")})`;
   }
 
@@ -397,6 +405,24 @@ function renderConstraintFieldExpression(
   }
 
   return quotePythonString(columnName);
+}
+
+const SUPPORTED_POSTGRES_INDEX_USING = new Set(["btree", "brin", "gin", "hash", "spgist"]);
+
+function buildPostgresUsingKwarg(
+  constraint: ConstraintDefinition,
+  provider: SupportedProvider
+): string | undefined {
+  if (provider !== "postgresql" || !constraint.algorithm) {
+    return undefined;
+  }
+
+  const normalized = constraint.algorithm.toLowerCase();
+  if (SUPPORTED_POSTGRES_INDEX_USING.has(normalized)) {
+    return       "postgresql_using='" + normalized + "'";
+  }
+
+  return undefined;
 }
 
 function buildMysqlLengthKwarg(
@@ -679,7 +705,7 @@ function renderBaseColumnType(
   }
 
   if (field.prismaType === "Json") {
-    return "JSON";
+    return provider === "postgresql" ? "JSONB" : "JSON";
   }
 
   if (field.nativeType) {

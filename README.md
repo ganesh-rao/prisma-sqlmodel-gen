@@ -157,9 +157,11 @@ Feature matrix:
 | `@@id` composite keys | Supported |
 | `@unique` / `@@unique` | Supported |
 | `@@index` basic indexes | Supported |
+| PostgreSQL `@@index(..., type: BTree|Hash|SpGist|Brin|Gin)` | Supported |
 | Prisma enums | Supported |
 | PostgreSQL scalar lists | Supported |
 | PostgreSQL enum lists | Supported |
+| Prisma `Json` on PostgreSQL | Supported as `JSONB` |
 | Explicit one-to-one | Supported |
 | Explicit one-to-many | Supported |
 | Explicit many-to-many via join model | Supported |
@@ -195,7 +197,8 @@ Intentionally unsupported non-isomorphic features:
 | `@ignore` / `@@ignore` | Hard fail |
 | `Unsupported(...)` scalar fields | Hard fail |
 | `cuid()` / `ulid()` / `nanoid()` defaults | Hard fail |
-| Advanced index algorithms / operator classes / expression-style indexes | Hard fail |
+| PostgreSQL operator classes / expression-style indexes | Hard fail |
+| Advanced index algorithms other than supported PostgreSQL `BTree|Hash|SpGist|Brin|Gin` | Hard fail |
 | Providers outside PostgreSQL / MySQL | Hard fail |
 | Features that need Python-only metadata absent from Prisma | Out of scope |
 
@@ -207,7 +210,7 @@ Examples:
 
 - scalar lists outside PostgreSQL
 - enum lists outside PostgreSQL
-- advanced PostgreSQL index forms such as operator classes or custom index algorithms
+- advanced PostgreSQL index forms such as operator classes or unsupported custom index algorithms
 - provider-specific features outside PostgreSQL/MySQL scope
 - Prisma-client-only behaviors such as `relationMode = "prisma"` or `@ignore`
 
@@ -233,7 +236,7 @@ Suggestion: Use only supported sort/length modifiers or manage the advanced inde
 - `UNSUPPORTED_CLIENT_SIDE_DEFAULT`
   Replace client-side defaults such as `cuid()` with `uuid()` or a database-generated default.
 - `UNSUPPORTED_ADVANCED_INDEX`
-  Keep advanced index algorithms, operator classes, or expression-style indexes in Prisma migrations instead of generated SQLModel metadata.
+  Keep unsupported operator classes or expression-style indexes in Prisma migrations instead of generated SQLModel metadata. Supported PostgreSQL `type: BTree`, `Hash`, `SpGist`, `Brin`, and `Gin` indexes are generated directly.
 - `PYTHON_FIELD_NAME_COLLISION`
   Rename Prisma fields that collapse to the same Python identifier after sanitization.
 - stale output in `--check`

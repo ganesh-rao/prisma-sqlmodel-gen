@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0
+
+- support PostgreSQL `@@index(..., type: BTree|Hash|SpGist|Brin|Gin)` by carrying Prisma index algorithms through normalization and emitting SQLAlchemy `postgresql_using=...` index metadata
+- allow plain PostgreSQL `type: Gin` indexes for JSON-backed schemas while continuing to hard-fail operator classes and expression-style indexes that are not emitted 1:1
+- render generic Prisma `Json` as PostgreSQL `JSONB` so generated SQLModel metadata matches Prisma's PostgreSQL connector semantics and works with GIN-indexed JSON fields
+- document the expanded PostgreSQL index support and explicit PostgreSQL `Json` -> `JSONB` behavior in the README support matrix
+
 ## 0.2.2
 
 - regenerate `package-lock.json` with npm 11.11.0 so the lockfile matches the stricter package-entry expectations of GitHub's Node 24 runners during `npm ci`

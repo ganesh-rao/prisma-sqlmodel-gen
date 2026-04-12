@@ -163,7 +163,11 @@ function validateAdvancedIndexSupport(
       continue;
     }
 
-    if (typeof entry.algorithm === "string" && entry.algorithm.length > 0) {
+    if (
+      typeof entry.algorithm === "string" &&
+      entry.algorithm.length > 0 &&
+      !isSupportedIndexAlgorithm(metadata.provider, entry.algorithm)
+    ) {
       diagnostics.push({
         code: "UNSUPPORTED_ADVANCED_INDEX",
         severity: "error",
@@ -188,6 +192,12 @@ function validateAdvancedIndexSupport(
       }
     }
   }
+}
+
+const SUPPORTED_POSTGRES_INDEX_ALGORITHMS = new Set(["btree", "brin", "gin", "hash", "spgist"]);
+
+function isSupportedIndexAlgorithm(provider: SupportedProvider, algorithm: string): boolean {
+  return provider === "postgresql" && SUPPORTED_POSTGRES_INDEX_ALGORITHMS.has(algorithm.toLowerCase());
 }
 
 function validateScalarLikeField(
