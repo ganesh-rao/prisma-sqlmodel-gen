@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.2
+
+- regenerate `package-lock.json` with npm 11.11.0 so the lockfile matches the stricter package-entry expectations of GitHub's Node 24 runners during `npm ci`
+- include the missing optional `@emnapi/core` and `@emnapi/runtime` package records required by the current runner toolchain
+- ship the same workflow and packaging fixes from current `main` under a fresh release tag instead of reusing the failed `0.2.1` tag
+
 ## 0.2.1
 
 - regenerate and commit the synchronized `package-lock.json` metadata after raising the Node engine requirement so GitHub Actions `npm ci` stays in sync with `package.json`
