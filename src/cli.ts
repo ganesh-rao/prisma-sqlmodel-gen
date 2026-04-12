@@ -63,8 +63,15 @@ function findRequestedGenerator(
   generators: PrismaGeneratorConfig[],
   requestedName?: string
 ): PrismaGeneratorConfig | undefined {
-  return generators.find((entry) =>
-    requestedName ? entry.name === requestedName : entry.provider.value?.includes("sqlmodel")
+  if (requestedName) {
+    return generators.find((entry) => entry.name === requestedName);
+  }
+
+  return (
+    generators.find((entry) => entry.provider.value === "prisma-sqlmodel-gen") ??
+    generators.find((entry) => entry.name === "sqlmodel") ??
+    generators.find((entry) => entry.provider.value?.includes("prisma-sqlmodel-gen")) ??
+    generators.find((entry) => entry.provider.value?.includes("sqlmodel"))
   );
 }
 

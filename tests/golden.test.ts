@@ -94,7 +94,9 @@ describe("golden output", () => {
       });
 
       const rendered = await readFile(path.join(outputDir, "models.py"), "utf8");
-      const normalized = rendered.replace(/^# Package version: .+$/m, "# Package version: <dynamic>");
+      const normalized = rendered
+        .replace(/^# Package version: .+$/m, "# Package version: <dynamic>")
+        .replace(/^# Schema hash: .+$/m, "# Schema hash: <dynamic>");
       expect(normalized).toMatchSnapshot();
     });
   }

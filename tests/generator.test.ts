@@ -710,6 +710,10 @@ describe("generateSqlModel", () => {
         cwd: workspaceDir,
         stdio: "ignore"
       });
+      execFileSync("npx", ["prisma-sqlmodel-gen", "--schema", schemaPath, "--check"], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
 
       const rendered = await readFile(
         path.join(workspaceDir, "generated", "sqlmodel", "models.py"),
@@ -721,6 +725,64 @@ describe("generateSqlModel", () => {
       expect(rendered).toContain("class User(SQLModel, table=True):");
       expect(rendered).toContain("__tablename__ = 'users'");
       expect(rendered).toContain(`# Package version: ${installedPackage.version}`);
+    },
+    30_000
+  );
+
+  it(
+    "works with a direct node generator provider and CLI --check via a packed local install",
+    async () => {
+      const repoRoot = process.cwd();
+      const packDir = await mkdtemp(path.join(os.tmpdir(), "prisma-sqlmodel-pack-direct-"));
+      const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "prisma-sqlmodel-workspace-direct-"));
+
+      execFileSync("npm", ["run", "build"], {
+        cwd: repoRoot,
+        stdio: "ignore"
+      });
+
+      const packedJson = execFileSync(
+        "npm",
+        ["pack", "--json", "--pack-destination", packDir],
+        {
+          cwd: repoRoot,
+          encoding: "utf8"
+        }
+      );
+      const [{ filename }] = JSON.parse(packedJson) as Array<{ filename: string }>;
+      const tarballPath = path.join(packDir, filename);
+
+      execFileSync("npm", ["init", "-y"], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+      execFileSync("npm", ["install", "--no-package-lock", "prisma@^7.7.0", tarballPath], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+
+      const schemaPath = path.join(workspaceDir, "schema.prisma");
+      const directProviderSchema = postgresSchema.replace(
+        'provider = "prisma-sqlmodel-gen"',
+        'provider = "node ./node_modules/prisma-sqlmodel-gen/dist/generator.js"'
+      );
+      await writeFile(schemaPath, directProviderSchema, "utf8");
+
+      execFileSync("npx", ["prisma", "generate", "--schema", schemaPath], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+      execFileSync("npx", ["prisma-sqlmodel-gen", "--schema", schemaPath, "--check"], {
+        cwd: workspaceDir,
+        stdio: "ignore"
+      });
+
+      const rendered = await readFile(
+        path.join(workspaceDir, "generated", "sqlmodel", "models.py"),
+        "utf8"
+      );
+      expect(rendered).toContain("class User(SQLModel, table=True):");
+      expect(rendered).toContain("__tablename__ = 'users'");
     },
     30_000
   );

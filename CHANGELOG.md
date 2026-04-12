@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.1
+
+- fix CLI `--check` stability by hashing the normalized schema definition instead of raw Prisma schema text, so standalone checks match files generated through Prisma's generator protocol
+- make CLI generator discovery robust for direct `node ./.../generator.js` provider blocks as well as the package provider string
+- add packed-install end-to-end regressions proving `prisma generate` followed by `prisma-sqlmodel-gen --check` succeeds for both supported invocation styles
+
 ## 0.3.0
 
 - support PostgreSQL `@@index(..., type: BTree|Hash|SpGist|Brin|Gin)` by carrying Prisma index algorithms through normalization and emitting SQLAlchemy `postgresql_using=...` index metadata

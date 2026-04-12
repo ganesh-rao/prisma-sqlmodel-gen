@@ -47,8 +47,25 @@ export async function checkSqlModelGeneration(input: GeneratorInput): Promise<Ge
   };
 }
 
-function createSchemaHash(datamodel: string): string {
-  return createHash("sha256").update(datamodel).digest("hex").slice(0, 12);
+function createSchemaHash(definition: SchemaDefinition): string {
+  return createHash("sha256").update(stableStringify(definition)).digest("hex").slice(0, 12);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left.localeCompare(right)
+    );
+    return `{${entries
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
 }
 
 function analyzeGeneratorInput(input: GeneratorInput): {
@@ -79,7 +96,7 @@ function renderManagedModule(input: GeneratorInput, definition: SchemaDefinition
   return renderPythonModule(definition, {
     moduleName: input.config.moduleName,
     headerComment: input.config.headerComment,
-    schemaHash: createSchemaHash(input.datamodel),
+    schemaHash: createSchemaHash(definition),
     packageVersion: PACKAGE_VERSION
   });
 }
