@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0
+
+- expand Prisma-to-SQLModel feature coverage beyond the original core relational subset, including PostgreSQL `@@schema`, referential actions, named/composite foreign keys, implicit many-to-many synthesis, PostgreSQL scalar and enum lists, richer native-type mapping, and `@updatedAt` support
+- add strict hard-fail diagnostics for advanced or non-isomorphic Prisma features such as `relationMode = "prisma"`, ignore markers, client-side ID generators, unsupported scalar fields, and advanced index/operator-class/expression forms that cannot be emitted 1:1
+- broaden validation with richer generator fixtures, Docker-backed PostgreSQL/MySQL integration tests, Prisma-vs-SQLModel parity tests, and maintained 100% source coverage
+- pin the documented and tested Python ORM target to `SQLModel 0.0.38`, simplify the README introduction for new users, and align CI/runtime expectations to the current Prisma dependency tree
+- change CI to run on version tag pushes and use Node 24 for GitHub Actions validation
+
 ## 0.1.7
 
 - patch the remaining transitive GitHub Dependabot and `npm audit` findings with npm `overrides` rather than waiting on upstream direct dependency releases
