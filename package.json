@@ -1,7 +1,7 @@
 {
   "name": "prisma-sqlmodel-gen",
-  "version": "0.3.1",
-  "description": "Generate SQLModel table models from a Prisma schema",
+  "version": "2.0.0",
+  "description": "Generate SQLModel table models from a Prisma 8 contract",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -10,8 +10,7 @@
     "python",
     "typescript",
     "codegen",
-    "postgresql",
-    "mysql"
+    "postgresql"
   ],
   "repository": {
     "type": "git",
@@ -21,36 +20,24 @@
   "bugs": {
     "url": "https://github.com/ganesh-rao/prisma-sqlmodel-gen/issues"
   },
-  "main": "./dist/generator.cjs",
-  "module": "./dist/generator.js",
-  "types": "./dist/generator.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "prisma-sqlmodel-gen": "dist/bin.js"
+    "prisma-sqlmodel-gen": "dist/cli.js"
   },
   "exports": {
     ".": {
-      "types": "./dist/generator.d.ts",
-      "import": "./dist/generator.js",
-      "require": "./dist/generator.cjs",
-      "default": "./dist/generator.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
     },
     "./cli": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js",
       "require": "./dist/cli.cjs",
       "default": "./dist/cli.js"
-    },
-    "./bin": {
-      "types": "./dist/bin.d.ts",
-      "import": "./dist/bin.js",
-      "require": "./dist/bin.cjs",
-      "default": "./dist/bin.js"
-    },
-    "./generator": {
-      "types": "./dist/generator.d.ts",
-      "import": "./dist/generator.js",
-      "require": "./dist/generator.cjs",
-      "default": "./dist/generator.js"
     }
   },
   "files": [
@@ -75,27 +62,12 @@
     "test:all": "npm run check && npm test && npm run test:integration",
     "prepublishOnly": "npm run clean && npm run test:all && npm run build"
   },
-  "dependencies": {
-    "@mrleebo/prisma-ast": "^0.15.0",
-    "@prisma/generator-helper": "^7.7.0",
-    "@prisma/internals": "^7.7.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@prisma/adapter-mariadb": "^7.7.0",
-    "@prisma/adapter-pg": "^7.7.0",
-    "@prisma/client": "^7.7.0",
     "@types/node": "^25.6.0",
     "@vitest/coverage-v8": "^4.1.4",
-    "mariadb": "^3.4.5",
-    "pg": "^8.16.3",
-    "prisma": "^7.7.0",
     "tsup": "^8.5.0",
-    "tsx": "^4.20.6",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"
-  },
-  "overrides": {
-    "@hono/node-server": "1.19.13",
-    "lodash-es": "4.18.1"
   }
 }

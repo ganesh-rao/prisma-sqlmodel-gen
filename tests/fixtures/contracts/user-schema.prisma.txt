@@ -1,0 +1,115 @@
+// use prisma-8
+//
+// Port of user-schema.v7.prisma.txt (a Prisma v7 schema) to Prisma 8 PSL.
+// Emission source for user-schema.json via `prisma contract emit`
+// (prisma 8.0.0-rc.15, @prisma/orm-postgres 8.0.0-rc.11).
+//
+// Port deltas (all verified against the v8 parser):
+// - dropped `datasource db` (forbidden in v8; connection lives in prisma.config.ts)
+// - dropped `generator` blocks (irrelevant to contract emit)
+// - `@db.Uuid` -> `Uuid`, `@db.Timestamp(6)` -> `Timestamp(6)`,
+//   `@db.VarChar(n)` -> `VarChar(n)`, `DateTime @db.Date` -> `Date`
+// - `type: Gin` -> `type: "gin"` (v8 wants a lowercase string naming a
+//   target-registered access method)
+// - `Json` -> `Jsonb` on every JSON column: v7's Json stored jsonb (the live
+//   schema's gin indexes prove it), while v8 splits Json (json) from Jsonb
+//   (jsonb) and gin has no operator class for plain json
+// - LOSSY: per-column `sort: Desc` in @@index has no v8 spelling in this RC
+//   (field args rejected, no `sort:` argument), so the three sorted indexes
+//   below keep their `..._desc` names but emit without sort direction.
+
+model Article {
+  id         Uuid         @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt  Timestamp(6) @map("created_at")
+  updatedAt  Timestamp(6) @map("updated_at")
+  deletedAt  Timestamp(6)? @map("deleted_at")
+  companyId  BigInt       @map("company_id")
+  filingId   BigInt       @map("filing_id")
+  title      String
+  content    Jsonb
+  fullPrompt Jsonb        @map("fullPrompt")
+  authors    Jsonb
+  editors    Jsonb
+  old_id     BigInt?
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  filing     Filing       @relation(fields: [filingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([authors], map: "pgarticle_authors", type: "gin")
+  @@index([companyId], map: "pgarticle_company_id")
+  @@index([companyId, createdAt], map: "pgarticle_company_created_at_desc")
+  @@index([content], map: "pgarticle_content", type: "gin")
+  @@index([createdAt], map: "pgarticle_created_at_desc")
+  @@index([editors], map: "pgarticle_editors", type: "gin")
+  @@index([filingId], map: "pgarticle_filing_id")
+  @@index([fullPrompt], map: "pgarticle_fullPrompt", type: "gin")
+  @@index([old_id], map: "pgarticle_old_id")
+  @@map("article")
+}
+
+model Company {
+  id              BigInt       @id @default(autoincrement())
+  createdAt       Timestamp(6) @map("created_at")
+  updatedAt       Timestamp(6) @map("updated_at")
+  deletedAt       Timestamp(6)? @map("deleted_at")
+  ticker          VarChar(255)? @unique(map: "pgcompany_ticker")
+  name            VarChar(255)
+  website         VarChar(255)?
+  isin            VarChar(255) @unique(map: "pgcompany_isin")
+  lei             VarChar(255)? @unique(map: "pgcompany_lei")
+  ric             VarChar(255)? @unique(map: "pgcompany_ric")
+  primaryExchange VarChar(255)? @map("primary_exchange")
+  country         VarChar(255)?
+  currency        VarChar(255)?
+  functionData    Jsonb?       @map("function")
+  prompt          String?
+  articles        Article[]
+  filings         Filing[]
+
+  @@index([functionData], map: "pgcompany_function", type: "gin")
+  @@map("company")
+}
+
+model Filing {
+  id         BigInt       @id @default(autoincrement())
+  createdAt  Timestamp(6) @map("created_at")
+  updatedAt  Timestamp(6) @map("updated_at")
+  deletedAt  Timestamp(6)? @map("deleted_at")
+  companyId  BigInt       @map("company_id")
+  title      VarChar(255)
+  fileHash   String?      @map("filehash")
+  data       Jsonb
+  filingDate Date         @map("filing_date")
+  sourceUrl  String       @unique(map: "pgfiling_source_url") @map("source_url")
+  status     VarChar(255)
+  old_id     BigInt?
+  articles   Article[]
+  chunks     FilingChunk[]
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([companyId], map: "pgfiling_company_id")
+  @@index([companyId, filingDate, id], map: "pgfiling_company_filing_date_id_desc")
+  @@index([data], map: "pgfiling_data", type: "gin")
+  @@map("filing")
+}
+
+model FilingChunk {
+  id         BigInt       @id @default(autoincrement())
+  createdAt  Timestamp(6) @map("created_at")
+  updatedAt  Timestamp(6) @map("updated_at")
+  deletedAt  Timestamp(6)? @map("deleted_at")
+  filingId   BigInt       @map("filing_id")
+  ordinal    Int
+  kind       VarChar(32)
+  text       String
+  searchText String       @map("search_text")
+  tokenCount Int          @map("token_count")
+  startIndex Int?         @map("start_index")
+  endIndex   Int?         @map("end_index")
+  chunkHash  VarChar(64)  @unique(map: "pgfilingchunk_chunk_hash") @map("chunk_hash")
+  data       Jsonb?
+  filing     Filing       @relation(fields: [filingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([filingId], map: "pgfilingchunk_filing_id")
+  @@unique([filingId, kind, ordinal], map: "pgfilingchunk_filing_kind_ordinal")
+  @@map("filing_chunk")
+}

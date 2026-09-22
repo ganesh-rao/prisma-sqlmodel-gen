@@ -1,0 +1,344 @@
+{
+  "schemaVersion": "1",
+  "targetFamily": "sql",
+  "target": "postgres",
+  "profileHash": "3916f444a8a17ad749191acf9e08dad97d1a327b88c2f1d45d12f240296aa8b2",
+  "roots": {
+    "probe": {
+      "model": "Probe",
+      "namespace": "public"
+    }
+  },
+  "domain": {
+    "namespaces": {
+      "public": {
+        "enum": {
+          "Level": {
+            "codecId": "pg/int4@1",
+            "members": [
+              {
+                "name": "Low",
+                "value": 1
+              },
+              {
+                "name": "High",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "models": {
+          "Probe": {
+            "fields": {
+              "bi": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int8@1",
+                  "kind": "scalar"
+                }
+              },
+              "dec": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/numeric@1",
+                  "kind": "scalar"
+                }
+              },
+              "f": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/float8@1",
+                  "kind": "scalar"
+                }
+              },
+              "id": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                }
+              },
+              "lvl": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/int4@1",
+                  "kind": "scalar"
+                },
+                "valueSet": {
+                  "entityKind": "enum",
+                  "entityName": "Level",
+                  "namespaceId": "public",
+                  "plane": "domain"
+                }
+              },
+              "tm": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/time-temporal@1",
+                  "kind": "scalar",
+                  "typeParams": {
+                    "precision": 2
+                  }
+                }
+              },
+              "ts": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/timestamp-temporal@1",
+                  "kind": "scalar",
+                  "typeParams": {
+                    "precision": 3
+                  }
+                }
+              },
+              "tstz": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "kind": "scalar",
+                  "typeParams": {
+                    "precision": 6
+                  }
+                }
+              },
+              "ttz": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/timetz@1",
+                  "kind": "scalar"
+                }
+              },
+              "u4": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              },
+              "u7": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              }
+            },
+            "relations": {},
+            "storage": {
+              "fields": {
+                "bi": {
+                  "column": "bi"
+                },
+                "dec": {
+                  "column": "dec"
+                },
+                "f": {
+                  "column": "f"
+                },
+                "id": {
+                  "column": "id"
+                },
+                "lvl": {
+                  "column": "lvl"
+                },
+                "tm": {
+                  "column": "tm"
+                },
+                "ts": {
+                  "column": "ts"
+                },
+                "tstz": {
+                  "column": "tstz"
+                },
+                "ttz": {
+                  "column": "ttz"
+                },
+                "u4": {
+                  "column": "u4"
+                },
+                "u7": {
+                  "column": "u7"
+                }
+              },
+              "namespaceId": "public",
+              "table": "probe"
+            }
+          }
+        }
+      }
+    }
+  },
+  "storage": {
+    "namespaces": {
+      "public": {
+        "entries": {
+          "table": {
+            "probe": {
+              "checks": [
+                {
+                  "expression": "\"lvl\" IN (1, 2)",
+                  "name": "probe_lvl_check_75163538",
+                  "prefix": "probe_lvl_check"
+                }
+              ],
+              "columns": {
+                "bi": {
+                  "codecId": "pg/int8@1",
+                  "nativeType": "int8",
+                  "nullable": false
+                },
+                "dec": {
+                  "codecId": "pg/numeric@1",
+                  "nativeType": "numeric",
+                  "nullable": false
+                },
+                "f": {
+                  "codecId": "pg/float8@1",
+                  "nativeType": "float8",
+                  "nullable": false
+                },
+                "id": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "expression": "autoincrement()",
+                    "kind": "function"
+                  },
+                  "nativeType": "int4",
+                  "nullable": false
+                },
+                "lvl": {
+                  "codecId": "pg/int4@1",
+                  "default": {
+                    "kind": "literal",
+                    "value": 1
+                  },
+                  "nativeType": "int4",
+                  "nullable": false,
+                  "valueSet": {
+                    "entityKind": "valueSet",
+                    "entityName": "Level",
+                    "namespaceId": "public",
+                    "plane": "storage"
+                  }
+                },
+                "tm": {
+                  "codecId": "pg/time-temporal@1",
+                  "nativeType": "time",
+                  "nullable": false,
+                  "typeParams": {
+                    "precision": 2
+                  }
+                },
+                "ts": {
+                  "codecId": "pg/timestamp-temporal@1",
+                  "nativeType": "timestamp",
+                  "nullable": false,
+                  "typeParams": {
+                    "precision": 3
+                  }
+                },
+                "tstz": {
+                  "codecId": "pg/timestamptz-temporal@1",
+                  "nativeType": "timestamptz",
+                  "nullable": false,
+                  "typeParams": {
+                    "precision": 6
+                  }
+                },
+                "ttz": {
+                  "codecId": "pg/timetz@1",
+                  "nativeType": "timetz",
+                  "nullable": false
+                },
+                "u4": {
+                  "codecId": "pg/text@1",
+                  "nativeType": "text",
+                  "nullable": false
+                },
+                "u7": {
+                  "codecId": "pg/text@1",
+                  "nativeType": "text",
+                  "nullable": false
+                }
+              },
+              "foreignKeys": [],
+              "indexes": [],
+              "primaryKey": {
+                "columns": [
+                  "id"
+                ]
+              },
+              "uniques": []
+            }
+          },
+          "valueSet": {
+            "Level": {
+              "kind": "valueSet",
+              "values": [
+                1,
+                2
+              ]
+            }
+          }
+        },
+        "id": "public",
+        "kind": "postgres-schema"
+      }
+    },
+    "storageHash": "d7e0f0b88e36e8a912117fd06cb9282ba1b9a369a938375e97b99fe6a7d19285"
+  },
+  "execution": {
+    "executionHash": "04a52a894d91b0f71503755a49b8f21475e554daaed8f60e04abae8947f02b20",
+    "mutations": {
+      "defaults": [
+        {
+          "onCreate": {
+            "id": "uuidv4",
+            "kind": "generator"
+          },
+          "ref": {
+            "column": "u4",
+            "namespace": "public",
+            "table": "probe"
+          }
+        },
+        {
+          "onCreate": {
+            "id": "uuidv7",
+            "kind": "generator"
+          },
+          "ref": {
+            "column": "u7",
+            "namespace": "public",
+            "table": "probe"
+          }
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "postgres": {
+      "distinctOn": true,
+      "jsonAgg": true,
+      "lateral": true,
+      "limit": true,
+      "orderBy": true,
+      "returning": true
+    },
+    "sql": {
+      "checkConstraint": true,
+      "defaultInInsert": true,
+      "enums": true,
+      "lateral": true,
+      "returning": true,
+      "scalarList": true
+    }
+  },
+  "extensions": {},
+  "meta": {},
+  "_generated": {
+    "warning": "⚠️  GENERATED FILE - DO NOT EDIT",
+    "message": "This file is automatically generated by \"prisma contract emit\".",
+    "regenerate": "To regenerate, run: prisma contract emit"
+  }
+}

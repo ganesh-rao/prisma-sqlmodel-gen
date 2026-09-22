@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.0.0
+
+- add a Prisma 8 frontend that reads `contract.json` (`schemaVersion` 1, `sql`/`postgres` target) instead of Prisma schema text: contract parsing and validation, contract-to-IR normalization, and extended Python emission for checks, text/integer/native enums, value objects, and table inheritance variants
+- go PostgreSQL-only: remove the MySQL renderer, provider branches, and fixtures (the 0.x line keeps Prisma 7 with schema files and MySQL)
+- remove the v7 frontend entirely: DMMF normalization, Prisma AST parsing, compatibility diagnostics, the `prisma generate` generator entrypoint, and the bin dispatcher
+- make the CLI contract-only and fully offline: `--contract` replaces `--schema`/`--generator`, no Prisma engines are loaded, `--output` defaults next to the contract file, and `--check` verifies committed files against the contract
+- rewire the package surface: `generateSqlModel`/`checkSqlModelGeneration` take contract input, the package root exports the programmatic library, the `bin` entry points at the CLI, and the `./bin`/`./generator` subpaths are removed
+- simplify configuration to typed overrides via `resolveGeneratorConfig(overrides)`; generator-block config discovery is gone
+- ship zero runtime dependencies after dropping `@prisma/*`, `@mrleebo/prisma-ast`, and related transitive advisories
+- render PostgreSQL `uuid` columns as `PG_UUID` (imported as `UUID as PG_UUID`) so the `uuid.UUID` annotation is never shadowed, and import `desc`/`asc` for sorted unique constraints that render as indexes
+- replace the v7 integration suite with an offline packed-install suite plus a docker-backed online suite that validates generated models against live PostgreSQL 16 on Python 3.12 with current `sqlmodel`
+- validate the frontend against real `prisma contract emit` output, including execution generator ids, numeric literal coercion, ambiguous counterpart pairing, and temporal-string columns
+- preserve named unique constraints end to end: composite and named single-column uniques keep their contract names, with named single-column uniques rendered as table-level `UniqueConstraint(..., name=...)` instead of silently dropping the name
+- add a real-world acceptance fixture ported from a Prisma 7 schema (v7 source, v8 port, and emitted contract for 4 models with gin indexes and named uniques) plus a live-PostgreSQL roundtrip proving the DDL, including gin access methods and exact constraint names
+- document the verified Prisma 7 to 8 port rules, including the required `Json` to `Jsonb` move and the Prisma 8 RC's missing index sort-direction spelling
+- keep the repository bars green: typecheck, 100% unit coverage thresholds, and both integration suites
+
 ## 0.3.1
 
 - fix CLI `--check` stability by hashing the normalized schema definition instead of raw Prisma schema text, so standalone checks match files generated through Prisma's generator protocol

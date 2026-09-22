@@ -1,0 +1,105 @@
+// use prisma-8
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum Priority {
+  LOW
+  HIGH
+}
+
+model User {
+  id        Int              @id @default(autoincrement())
+  email     VarChar(255)     @unique
+  name      String?
+  role      Role             @default(MEMBER)
+  priority  Priority         @default(LOW)
+  tags      String[]
+  createdAt TimestamptzString @default(now())
+  updatedAt temporal.updatedAtString()
+  posts     Post[]
+  profile   Profile?
+
+  @@map("users")
+}
+
+model Profile {
+  id        Int      @id @default(autoincrement())
+  bio       String?
+  birthDate Date?
+  avatar    Bytes?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    Int      @unique
+
+  @@map("profiles")
+}
+
+model Post {
+  id        Int            @id @default(autoincrement())
+  title     VarChar(255)
+  body      String?
+  published Boolean        @default(false)
+  views     BigInt         @default(0)
+  rating    Decimal?
+  data      Json?
+  reference String         @default(dbgenerated("md5('seed')"))
+  scheduled Timestamptz(3)?
+  author    User           @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  authorId  Int
+  tags      PostTag[]
+  comments  Comment[]
+
+  @@index([authorId, published])
+  @@map("posts")
+}
+
+model Tag {
+  id    Int       @id @default(autoincrement())
+  label String    @unique
+  posts PostTag[]
+
+  @@map("tags")
+}
+
+model PostTag {
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId Int
+  tag    Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  tagId  Int
+
+  @@id([postId, tagId])
+  @@map("post_tags")
+}
+
+model Comment {
+  id       Int      @id @default(autoincrement())
+  body     String
+  post     Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId   Int
+  parent   Comment? @relation("Replies", fields: [parentId], references: [id])
+  parentId Int?
+  replies  Comment[] @relation("Replies")
+
+  @@map("comments")
+}
+
+model Membership {
+  userId  Int
+  groupId Int
+  role    String   @default("member")
+  created DateTime @default(now())
+
+  @@id([userId, groupId])
+  @@unique([groupId, role])
+  @@map("memberships")
+}
+
+model ApiKey {
+  id      String   @id @default(uuid())
+  token   String   @unique @default(uuid())
+  created DateTime @default(now())
+
+  @@map("api_keys")
+}

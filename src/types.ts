@@ -1,7 +1,4 @@
-import type * as DMMF from "@prisma/dmmf";
-import type { GeneratorOptions } from "@prisma/generator";
-
-export type SupportedProvider = "postgresql" | "mysql";
+export type SupportedProvider = "postgresql";
 
 export type GeneratorConfig = {
   moduleName: string;
@@ -12,11 +9,9 @@ export type GeneratorConfig = {
   sqlmodelImportStyle: "sqlmodel";
 };
 
-export type GeneratorInput = {
-  options?: GeneratorOptions;
-  dmmf: DMMF.Document | unknown;
-  schemaPath: string;
-  datamodel: string;
+export type ContractGeneratorInput = {
+  contractPath: string;
+  contractText: string;
   outputDir: string;
   config: GeneratorConfig;
 };
@@ -26,7 +21,6 @@ export type ConstraintKind = "primary_key" | "unique" | "index";
 export type ConstraintFieldDefinition = {
   name: string;
   sort?: "asc" | "desc";
-  length?: number;
 };
 
 export type ConstraintDefinition = {
@@ -34,6 +28,14 @@ export type ConstraintDefinition = {
   fields: ConstraintFieldDefinition[];
   name?: string;
   algorithm?: string;
+  expression?: string;
+  where?: string;
+  unique?: boolean;
+};
+
+export type CheckDefinition = {
+  name?: string;
+  expression: string;
 };
 
 export type NativeType = {
@@ -76,7 +78,6 @@ export type RelationFieldDefinition = {
   onUpdate?: string;
   foreignKeyConstraintName?: string;
   linkModelName?: string;
-  isImplicitManyToMany?: boolean;
 };
 
 export type ForeignKeyDefinition = {
@@ -91,30 +92,59 @@ export type ForeignKeyDefinition = {
 export type EnumDefinition = {
   name: string;
   pythonName: string;
+  storage?: "native" | "text" | "integer";
   values: Array<{
     name: string;
     pythonName: string;
-    value: string;
+    value: string | number;
   }>;
 };
+
+export type ValueObjectFieldDefinition = {
+  name: string;
+  pythonName: string;
+  pythonType: string;
+  isNullable: boolean;
+  isList: boolean;
+};
+
+export type ValueObjectDefinition = {
+  name: string;
+  pythonName: string;
+  fields: ValueObjectFieldDefinition[];
+};
+
+export type ModelInheritance =
+  | {
+      kind: "base";
+      discriminatorField: string;
+      variants: Array<{ model: string; value: string }>;
+    }
+  | {
+      kind: "variant";
+      baseModel: string;
+      value: string;
+      ownsTable: boolean;
+    };
 
 export type ModelDefinition = {
   name: string;
   pythonName: string;
   tableName: string;
   tableSchema?: string;
-  isGeneratedLinkModel?: boolean;
   scalarFields: ScalarFieldDefinition[];
   relationFields: RelationFieldDefinition[];
   constraints: ConstraintDefinition[];
   foreignKeys: ForeignKeyDefinition[];
+  checks?: CheckDefinition[];
+  inheritance?: ModelInheritance;
 };
 
 export type SchemaDefinition = {
   provider: SupportedProvider;
-  relationMode?: string;
   enums: EnumDefinition[];
   models: ModelDefinition[];
+  valueObjects?: ValueObjectDefinition[];
 };
 
 export type DiagnosticSeverity = "error" | "warning";

@@ -1,44 +1,36 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { GeneratorConfig as PrismaGeneratorConfig } from "@prisma/generator";
-import prismaInternals from "@prisma/internals";
-import { resolveGeneratorConfig, resolveOutputDir } from "./config.js";
+import { resolveGeneratorConfig } from "./config.js";
 import { formatDiagnostics, isDiagnosticError } from "./diagnostics.js";
 import { checkSqlModelGeneration, generateSqlModel } from "./generate.js";
-import type { GeneratorInput } from "./types.js";
-
-const { getConfig, getDMMF } = prismaInternals;
+import type { ContractGeneratorInput } from "./types.js";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   /* v8 ignore next 3 -- exercised through the real CLI entrypoint, not via in-process unit tests */
-  if (!args.schema) {
-    throw new Error("Missing required --schema argument.");
+  if (!args.contract) {
+    throw new Error("Missing required --contract argument.");
   }
 
-  const schemaPath = path.resolve(args.schema);
-  const datamodel = await readFile(schemaPath, "utf8");
-  const config = await getConfig({ datamodel });
-  const discoveredGenerator = findRequestedGenerator(config.generators, args.generator);
-  /* v8 ignore next 3 -- exercised through the real CLI entrypoint, not via in-process unit tests */
-  if (!discoveredGenerator && !args.output) {
-    throw new Error("No SQLModel generator block found. Provide --output or add a generator block.");
-  }
+  const contractPath = path.resolve(args.contract);
+  const contractText = await readFile(contractPath, "utf8");
+  const input: ContractGeneratorInput = {
+    contractPath,
+    contractText,
+    outputDir: resolveContractOutputDir(contractPath, args.output),
+    config: resolveGeneratorConfig({
+      moduleName: args.moduleName,
+      emitInit: args.emitInit
+    })
+  };
 
-  const generator = discoveredGenerator ?? createAdHocGenerator(args.output!, schemaPath);
-  const dmmf = await getDMMF({ datamodel });
-  const input = buildCliGeneratorInput({
-    args,
-    config,
-    datamodel,
-    dmmf,
-    generator,
-    schemaPath
-  });
+  await runWithDiagnosticReporting(() => runCliOperation(args, input));
+}
 
+async function runWithDiagnosticReporting(operation: () => Promise<void>): Promise<void> {
   try {
-    await runCliOperation(args, input);
+    await operation();
   } catch (error) {
     if (isDiagnosticError(error)) {
       console.error(formatDiagnostics(error.diagnostics));
@@ -50,76 +42,23 @@ async function main(): Promise<void> {
   }
 }
 
+function resolveContractOutputDir(contractPath: string, explicitOutput?: string): string {
+  if (explicitOutput) {
+    return path.resolve(explicitOutput);
+  }
+
+  return path.resolve(path.dirname(contractPath), "generated", "sqlmodel");
+}
+
 type CliArgs = {
-  schema?: string;
+  contract?: string;
   output?: string;
   moduleName?: string;
-  generator?: string;
   check: boolean;
   emitInit?: boolean;
 };
 
-function findRequestedGenerator(
-  generators: PrismaGeneratorConfig[],
-  requestedName?: string
-): PrismaGeneratorConfig | undefined {
-  if (requestedName) {
-    return generators.find((entry) => entry.name === requestedName);
-  }
-
-  return (
-    generators.find((entry) => entry.provider.value === "prisma-sqlmodel-gen") ??
-    generators.find((entry) => entry.name === "sqlmodel") ??
-    generators.find((entry) => entry.provider.value?.includes("prisma-sqlmodel-gen")) ??
-    generators.find((entry) => entry.provider.value?.includes("sqlmodel"))
-  );
-}
-
-function createAdHocGenerator(output: string, schemaPath: string): PrismaGeneratorConfig {
-  return {
-    name: "sqlmodel",
-    provider: { fromEnvVar: null, value: "prisma-sqlmodel-gen" },
-    output: { fromEnvVar: null, value: output },
-    binaryTargets: [],
-    previewFeatures: [],
-    config: {},
-    sourceFilePath: schemaPath
-  };
-}
-
-function buildCliGeneratorInput(params: {
-  args: CliArgs;
-  config: Awaited<ReturnType<typeof getConfig>>;
-  datamodel: string;
-  dmmf: Awaited<ReturnType<typeof getDMMF>>;
-  generator: PrismaGeneratorConfig;
-  schemaPath: string;
-}): GeneratorInput {
-  const { args, config, datamodel, dmmf, generator, schemaPath } = params;
-
-  return {
-    options: {
-      generator,
-      schemaPath,
-      datamodel,
-      dmmf,
-      datasources: config.datasources,
-      otherGenerators: config.generators.filter((entry) => entry.name !== generator.name),
-      version: "unknown"
-    },
-    dmmf,
-    schemaPath,
-    datamodel,
-    outputDir: resolveOutputDir(schemaPath, generator, args.output),
-    config: resolveGeneratorConfig(generator, {
-      moduleName: args.moduleName,
-      emitInit: args.emitInit
-    })
-  };
-}
-
-async function runCliOperation(args: CliArgs, input: GeneratorInput): Promise<void> {
-  /* v8 ignore next 4 -- the check path is covered via CLI-level tests instead of a direct in-process call */
+async function runCliOperation(args: CliArgs, input: ContractGeneratorInput): Promise<void> {
   if (args.check) {
     await checkSqlModelGeneration(input);
     return;
@@ -133,14 +72,12 @@ function parseArgs(argv: string[]): CliArgs {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--schema") {
-      args.schema = argv[++index];
+    if (arg === "--contract") {
+      args.contract = argv[++index];
     } else if (arg === "--output") {
       args.output = argv[++index];
     } else if (arg === "--module-name") {
       args.moduleName = argv[++index];
-    } else if (arg === "--generator") {
-      args.generator = argv[++index];
     } else if (arg === "--check") {
       args.check = true;
     } else if (arg === "--emit-init") {

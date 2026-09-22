@@ -8,16 +8,15 @@ import type {
   RelationFieldDefinition,
   ScalarFieldDefinition,
   SchemaDefinition,
-  SupportedProvider
+  ValueObjectDefinition
 } from "./types.js";
-import { quotePythonString } from "./utils.js";
+import { quotePythonString, toPythonIdentifier } from "./utils.js";
 
 type ImportState = {
   standard: Set<string>;
   sqlmodel: Set<string>;
   sqlalchemy: Set<string>;
   postgres: Set<string>;
-  mysql: Set<string>;
 };
 
 type RenderContext = {
@@ -25,8 +24,6 @@ type RenderContext = {
   enumNameMap: Map<string, string>;
   fieldNameMap: Map<string, Map<string, string>>;
 };
-
-type LegacyConstraintField = ConstraintFieldDefinition | string;
 
 const SCALAR_PRISMA_TYPES = new Set([
   "String",
@@ -37,10 +34,11 @@ const SCALAR_PRISMA_TYPES = new Set([
   "Decimal",
   "Bytes",
   "DateTime",
-  "Json"
+  "Json",
+  "Jsonb"
 ]);
 
-const NONE_DEFAULT_FUNCTIONS = new Set(["autoincrement", "dbgenerated", "now", "uuid"]);
+const NONE_DEFAULT_FUNCTIONS = new Set(["autoincrement", "dbgenerated", "now", "now_client", "uuid"]);
 
 export function renderPythonModule(
   schema: SchemaDefinition,
@@ -55,8 +53,7 @@ export function renderPythonModule(
     standard: new Set(["from typing import Any, Optional"]),
     sqlmodel: new Set(["Field", "Relationship", "SQLModel"]),
     sqlalchemy: new Set(["Column"]),
-    postgres: new Set(),
-    mysql: new Set()
+    postgres: new Set()
   };
   const context = buildRenderContext(schema);
 
@@ -78,16 +75,16 @@ export function renderPythonModule(
 
   sections.push(renderImports(imports));
 
+  const valueObjects = sortValueObjects(schema.valueObjects ?? []);
+  if (valueObjects.length > 0) {
+    sections.push(valueObjects.map((entry) => renderValueObject(entry)).join("\n\n"));
+  }
+
   if (schema.enums.length > 0) {
     sections.push(schema.enums.map((entry) => renderEnum(entry)).join("\n\n"));
   }
 
-  const generatedLinkModels = schema.models.filter((model) => model.isGeneratedLinkModel);
-  const regularModels = schema.models.filter((model) => !model.isGeneratedLinkModel);
-
-  if (generatedLinkModels.length > 0) {
-    sections.push(generatedLinkModels.map((model) => renderModel(model, schema, context)).join("\n\n\n"));
-  }
+  const regularModels = sortModelsForEmission(schema.models);
 
   sections.push(regularModels.map((model) => renderModel(model, schema, context)).join("\n\n\n"));
 
@@ -115,37 +112,41 @@ function collectImports(schema: SchemaDefinition, imports: ImportState): void {
     imports.sqlalchemy.add("Enum as SAEnum");
   }
 
+  const datetimeNames = new Set<string>();
+  const uuidNames = new Set<string>();
+
+  for (const valueObject of schema.valueObjects ?? []) {
+    for (const field of valueObject.fields) {
+      collectAnnotationImports(field.pythonType, imports, datetimeNames, uuidNames);
+    }
+  }
+
   for (const model of schema.models) {
     if (model.tableSchema) {
       imports.standard.add("from typing import Any, Optional");
     }
 
     for (const field of model.scalarFields) {
-      if (field.pythonType === "Decimal") {
-        imports.standard.add("from decimal import Decimal");
-      }
-      if (field.pythonType === "datetime") {
-        imports.standard.add("from datetime import datetime");
-      }
-      if (field.prismaType === "Json") {
-        if (schema.provider === "postgresql") {
-          imports.postgres.add("JSONB");
-        } else {
-          imports.sqlalchemy.add("JSON");
-        }
+      collectAnnotationImports(field.pythonType, imports, datetimeNames, uuidNames);
+      if (field.prismaType === "Json" && field.nativeType?.name !== "Json") {
+        imports.postgres.add("JSONB");
       }
       if (field.isUpdatedAt) {
         imports.sqlalchemy.add("func");
       }
-      if (field.isList && schema.provider === "postgresql") {
+      if (field.isList) {
         imports.postgres.add("ARRAY");
       }
-      collectTypeImports(schema.provider, field.nativeType, imports, field);
+      collectTypeImports(field.nativeType, imports, field);
 
       if (field.defaultValue && typeof field.defaultValue === "object" && "name" in field.defaultValue) {
         const name = String(field.defaultValue.name);
         if (name === "uuid") {
-          imports.standard.add("from uuid import uuid4");
+          uuidNames.add("uuid4");
+        }
+        if (name === "now_client") {
+          datetimeNames.add("datetime");
+          datetimeNames.add("timezone");
         }
         if (name === "dbgenerated") {
           imports.sqlalchemy.add("text");
@@ -160,38 +161,78 @@ function collectImports(schema: SchemaDefinition, imports: ImportState): void {
     }
 
     for (const constraint of model.constraints) {
-      const normalizedFields = normalizeConstraintFields(constraint.fields);
+      const { fields } = constraint;
       if (constraint.kind === "unique") {
-        if (normalizedFields.some((field) => field.length || field.sort)) {
+        if (fields.some((field) => field.sort)) {
           imports.sqlalchemy.add("Index");
+          if (fields.some((field) => field.sort === "desc")) {
+            imports.sqlalchemy.add("desc");
+          }
+          if (fields.some((field) => field.sort === "asc")) {
+            imports.sqlalchemy.add("asc");
+          }
         } else {
           imports.sqlalchemy.add("UniqueConstraint");
         }
       }
       if (constraint.kind === "index") {
         imports.sqlalchemy.add("Index");
-        if (normalizedFields.some((field) => field.sort === "desc")) {
+        if (fields.some((field) => field.sort === "desc")) {
           imports.sqlalchemy.add("desc");
         }
-        if (normalizedFields.some((field) => field.sort === "asc")) {
+        if (fields.some((field) => field.sort === "asc")) {
           imports.sqlalchemy.add("asc");
         }
+        if (constraint.expression || constraint.where) {
+          imports.sqlalchemy.add("text");
+        }
       }
-      if (constraint.kind === "primary_key" && normalizedFields.length > 1) {
+      if (constraint.kind === "primary_key" && fields.length > 1) {
         imports.sqlalchemy.add("PrimaryKeyConstraint");
       }
     }
 
-    for (const foreignKey of model.foreignKeys ?? []) {
-      if (getForeignKeyFieldCount(foreignKey) > 1) {
-        imports.sqlalchemy.add("ForeignKeyConstraint");
-      }
+    for (const foreignKey of model.foreignKeys) {
+      imports.sqlalchemy.add("ForeignKeyConstraint");
     }
+
+    if ((model.checks ?? []).length > 0) {
+      imports.sqlalchemy.add("CheckConstraint");
+    }
+  }
+
+  if (datetimeNames.size > 0) {
+    imports.standard.add(`from datetime import ${[...datetimeNames].sort().join(", ")}`);
+  }
+  if (uuidNames.size > 0) {
+    imports.standard.add(`from uuid import ${[...uuidNames].sort().join(", ")}`);
+  }
+}
+
+function collectAnnotationImports(
+  pythonType: string,
+  imports: ImportState,
+  datetimeNames: Set<string>,
+  uuidNames: Set<string>
+): void {
+  if (pythonType === "Decimal") {
+    imports.standard.add("from decimal import Decimal");
+  }
+  if (pythonType === "datetime") {
+    datetimeNames.add("datetime");
+  }
+  if (pythonType === "date") {
+    datetimeNames.add("date");
+  }
+  if (pythonType === "time") {
+    datetimeNames.add("time");
+  }
+  if (pythonType === "UUID") {
+    uuidNames.add("UUID");
   }
 }
 
 function collectTypeImports(
-  provider: SupportedProvider,
   nativeType: NativeType | undefined,
   imports: ImportState,
   field: ScalarFieldDefinition
@@ -227,11 +268,8 @@ function collectTypeImports(
     }
   }
 
-  if (provider === "postgresql") {
-    imports.postgres.add(mapPostgresType(nativeType).typeName);
-  } else {
-    imports.mysql.add(mapMySqlType(nativeType).typeName);
-  }
+  const mapping = mapPostgresType(nativeType);
+  imports.postgres.add(mapping.importName ?? mapping.typeName);
 }
 
 function renderImports(imports: ImportState): string {
@@ -241,23 +279,105 @@ function renderImports(imports: ImportState): string {
   if (imports.postgres.size > 0) {
     lines.push(`from sqlalchemy.dialects.postgresql import ${[...imports.postgres].sort().join(", ")}`);
   }
-  if (imports.mysql.size > 0) {
-    lines.push(`from sqlalchemy.dialects.mysql import ${[...imports.mysql].sort().join(", ")}`);
-  }
 
   return lines.join("\n");
 }
 
 function renderEnum(entry: EnumDefinition): string {
+  const base = entry.storage === "integer" ? "int" : "str";
   const body = entry.values
-    .map((value) => `    ${value.pythonName} = ${quotePythonString(value.value)}`)
+    .map(
+      (value) =>
+        `    ${value.pythonName} = ${typeof value.value === "string" ? quotePythonString(value.value) : String(value.value)}`
+    )
     .join("\n");
-  return `class ${entry.pythonName}(str, Enum):\n${body}`;
+  return `class ${entry.pythonName}(${base}, Enum):\n${body}`;
+}
+
+function renderValueObject(entry: ValueObjectDefinition): string {
+  const lines = [`class ${entry.pythonName}(SQLModel):`];
+  for (const field of entry.fields) {
+    const annotation = field.isList ? `list[${field.pythonType}]` : field.pythonType;
+    if (field.isNullable) {
+      lines.push(`    ${field.pythonName}: ${annotation} | None = None`);
+    } else {
+      lines.push(`    ${field.pythonName}: ${annotation}`);
+    }
+  }
+  if (lines.length === 1) {
+    lines.push("    pass");
+  }
+  return lines.join("\n");
+}
+
+function sortModelsForEmission(models: ModelDefinition[]): ModelDefinition[] {
+  const rank = (model: ModelDefinition): number => {
+    if (model.inheritance?.kind === "variant") {
+      return 2;
+    }
+    if (model.relationFields.some((field) => field.linkModelName !== undefined)) {
+      return 1;
+    }
+    return 0;
+  };
+  return models
+    .map((model, index) => ({ model, index, rank: rank(model) }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((entry) => entry.model);
+}
+
+function sortValueObjects(entries: ValueObjectDefinition[]): ValueObjectDefinition[] {
+  const byName = new Map(entries.map((entry) => [entry.pythonName, entry]));
+  const dependencies = new Map(
+    entries.map((entry) => [
+      entry.pythonName,
+      entry.fields.flatMap((field) => {
+        const target = byName.get(field.pythonType);
+        return target ? [target] : [];
+      })
+    ])
+  );
+  const sorted: ValueObjectDefinition[] = [];
+  const visited = new Set<string>();
+  const visit = (entry: ValueObjectDefinition, stack: string[]): void => {
+    if (visited.has(entry.pythonName)) {
+      return;
+    }
+    visited.add(entry.pythonName);
+    for (const dependency of dependencies.get(entry.pythonName) as ValueObjectDefinition[]) {
+      if (!stack.includes(dependency.pythonName)) {
+        visit(dependency, [...stack, entry.pythonName]);
+      }
+    }
+    sorted.push(entry);
+  };
+  for (const entry of entries) {
+    visit(entry, []);
+  }
+  return sorted;
 }
 
 function renderModel(model: ModelDefinition, schema: SchemaDefinition, context: RenderContext): string {
-  const lines: string[] = [`class ${model.pythonName}(SQLModel, table=True):`];
-  lines.push(`    __tablename__ = ${quotePythonString(model.tableName)}`);
+  const inheritance = model.inheritance;
+  const isSharedTableVariant = inheritance?.kind === "variant" && !inheritance.ownsTable;
+  const baseClass =
+    inheritance?.kind === "variant"
+      ? (context.modelNameMap.get(inheritance.baseModel) ?? toPythonIdentifier(inheritance.baseModel))
+      : "SQLModel";
+  const classLine = isSharedTableVariant
+    ? `class ${model.pythonName}(${baseClass}):`
+    : inheritance?.kind === "variant"
+      ? `class ${model.pythonName}(${baseClass}, table=True):`
+      : `class ${model.pythonName}(SQLModel, table=True):`;
+  const lines: string[] = [classLine];
+  if (!isSharedTableVariant) {
+    lines.push(`    __tablename__ = ${quotePythonString(model.tableName)}`);
+  }
+
+  const mapperArgs = renderMapperArgs(model, context);
+  if (mapperArgs) {
+    lines.push(`    __mapper_args__ = ${mapperArgs}`);
+  }
 
   const sanitizationComments = renderSanitizationComments(model);
   for (const comment of sanitizationComments) {
@@ -277,11 +397,23 @@ function renderModel(model: ModelDefinition, schema: SchemaDefinition, context: 
     lines.push(`    ${renderRelationField(field, model, schema, context)}`);
   }
 
-  if (lines.length === 2) {
+  if (lines.length === 2 && !mapperArgs) {
     lines.push("    pass");
   }
 
   return lines.join("\n");
+}
+
+function renderMapperArgs(model: ModelDefinition, context: RenderContext): string | undefined {
+  const inheritance = model.inheritance;
+  if (!inheritance) {
+    return undefined;
+  }
+  if (inheritance.kind === "variant") {
+    return `{'polymorphic_identity': ${quotePythonString(inheritance.value)}}`;
+  }
+  const discriminator = resolveFieldPythonName(model.name, inheritance.discriminatorField, context);
+  return `{'polymorphic_on': ${quotePythonString(discriminator)}}`;
 }
 
 function renderSanitizationComments(model: ModelDefinition): string[] {
@@ -303,21 +435,27 @@ function renderTableArgs(model: ModelDefinition, schema: SchemaDefinition, conte
   const args: string[] = [];
 
   for (const constraint of model.constraints) {
-    if (constraint.kind === "primary_key" && normalizeConstraintFields(constraint.fields).length > 1) {
-      args.push(renderConstraintCall("PrimaryKeyConstraint", constraint, model, schema, context));
+    if (constraint.kind === "primary_key" && constraint.fields.length > 1) {
+      args.push(renderConstraintCall("PrimaryKeyConstraint", constraint, model, context));
     }
     if (constraint.kind === "unique") {
-      args.push(renderConstraintCall("UniqueConstraint", constraint, model, schema, context));
+      args.push(renderConstraintCall("UniqueConstraint", constraint, model, context));
     }
     if (constraint.kind === "index") {
-      args.push(renderConstraintCall("Index", constraint, model, schema, context));
+      args.push(renderConstraintCall("Index", constraint, model, context));
     }
   }
 
-  for (const foreignKey of model.foreignKeys ?? []) {
-    if (getForeignKeyFieldCount(foreignKey) > 1) {
-      args.push(renderForeignKeyConstraint(foreignKey, model, schema));
+  for (const foreignKey of model.foreignKeys) {
+    args.push(renderForeignKeyConstraint(foreignKey, model, schema));
+  }
+
+  for (const check of model.checks ?? []) {
+    const checkArgs = [quotePythonString(check.expression)];
+    if (check.name) {
+      checkArgs.push(`name=${quotePythonString(check.name)}`);
     }
+    args.push(`CheckConstraint(${checkArgs.join(", ")})`);
   }
 
   if (model.tableSchema) {
@@ -335,12 +473,11 @@ function renderConstraintCall(
   helper: "PrimaryKeyConstraint" | "UniqueConstraint" | "Index",
   constraint: ConstraintDefinition,
   model: ModelDefinition,
-  schema: SchemaDefinition,
   context: RenderContext
 ): string {
-  const normalizedFields = normalizeConstraintFields(constraint.fields);
-  const fieldArgs = normalizedFields.map((field) => renderConstraintFieldExpression(field, helper, model, context));
-  const anyDialectOptions = normalizedFields.some((field) => field.length || field.sort);
+  const { fields } = constraint;
+  const fieldArgs = fields.map((field) => renderConstraintFieldExpression(field, helper, model, context));
+  const anyDialectOptions = fields.some((field) => field.sort);
 
   if ((helper === "UniqueConstraint" || helper === "Index") && anyDialectOptions) {
     const args = [
@@ -351,14 +488,10 @@ function renderConstraintCall(
     if (helper === "UniqueConstraint") {
       kwargs.push("unique=True");
     }
-    const mysqlLength = buildMysqlLengthKwarg(constraint, model, schema.provider);
-    if (mysqlLength) {
-      kwargs.push(mysqlLength);
-    }
     return `Index(${[...args, ...kwargs].join(", ")})`;
   }
 
-  const columnNames = normalizedFields.map((field) => {
+  const columnNames = fields.map((field) => {
     const scalarField = model.scalarFields.find((candidate) => candidate.name === field.name);
     return quotePythonString(scalarField?.columnName ?? field.name);
   });
@@ -368,9 +501,18 @@ function renderConstraintCall(
       ...(constraint.name ? [quotePythonString(constraint.name)] : []),
       ...fieldArgs
     ];
-    const postgresUsing = buildPostgresUsingKwarg(constraint, schema.provider);
+    if (constraint.expression) {
+      args.push(`text(${quotePythonString(constraint.expression)})`);
+    }
+    if (constraint.unique) {
+      args.push("unique=True");
+    }
+    const postgresUsing = buildPostgresUsingKwarg(constraint);
     if (postgresUsing) {
       args.push(postgresUsing);
+    }
+    if (constraint.where) {
+      args.push(`postgresql_where=text(${quotePythonString(constraint.where)})`);
     }
     return `Index(${args.join(", ")})`;
   }
@@ -409,44 +551,17 @@ function renderConstraintFieldExpression(
 
 const SUPPORTED_POSTGRES_INDEX_USING = new Set(["btree", "brin", "gin", "hash", "spgist"]);
 
-function buildPostgresUsingKwarg(
-  constraint: ConstraintDefinition,
-  provider: SupportedProvider
-): string | undefined {
-  if (provider !== "postgresql" || !constraint.algorithm) {
+function buildPostgresUsingKwarg(constraint: ConstraintDefinition): string | undefined {
+  if (!constraint.algorithm) {
     return undefined;
   }
 
   const normalized = constraint.algorithm.toLowerCase();
   if (SUPPORTED_POSTGRES_INDEX_USING.has(normalized)) {
-    return       "postgresql_using='" + normalized + "'";
+    return "postgresql_using='" + normalized + "'";
   }
 
   return undefined;
-}
-
-function buildMysqlLengthKwarg(
-  constraint: ConstraintDefinition,
-  model: ModelDefinition,
-  provider: SupportedProvider
-): string | undefined {
-  if (provider !== "mysql") {
-    return undefined;
-  }
-
-  const items = normalizeConstraintFields(constraint.fields)
-    .filter((field) => field.length)
-    .map((field) => {
-      const scalarField = model.scalarFields.find((candidate) => candidate.name === field.name);
-      const columnName = scalarField?.columnName ?? field.name;
-      return `${quotePythonString(columnName)}: ${field.length}`;
-    });
-
-  if (items.length === 0) {
-    return undefined;
-  }
-
-  return `mysql_length={${items.join(", ")}}`;
 }
 
 function renderForeignKeyConstraint(
@@ -538,7 +653,7 @@ function buildColumnKwargs(
   const kwargs: string[] = [];
 
   const hasCompositePrimaryKey = model.constraints.some(
-    (constraint) => constraint.kind === "primary_key" && normalizeConstraintFields(constraint.fields).length > 1
+    (constraint) => constraint.kind === "primary_key" && constraint.fields.length > 1
   );
 
   if (field.isUnique && !field.isId) {
@@ -568,9 +683,12 @@ function renderRelationField(
   schema: SchemaDefinition,
   context: RenderContext
 ): string {
-  const args = [
-    `back_populates=${quotePythonString(resolveFieldPythonName(field.targetModel, field.backPopulates, context))}`
-  ];
+  const args: string[] = [];
+  if (field.backPopulates) {
+    args.push(
+      `back_populates=${quotePythonString(resolveFieldPythonName(field.targetModel, field.backPopulates, context))}`
+    );
+  }
 
   if (field.linkModelName) {
     args.push(`link_model=${field.linkModelName}`);
@@ -682,36 +800,37 @@ function renderColumnType(
   schema: SchemaDefinition,
   context: RenderContext
 ): string {
-  if (field.isList && schema.provider === "postgresql") {
-    return `ARRAY(${renderBaseColumnType(field, model, schema.provider, context)})`;
+  if (field.isList) {
+    return `ARRAY(${renderBaseColumnType(field, model, context)})`;
   }
 
-  return renderBaseColumnType(field, model, schema.provider, context);
+  return renderBaseColumnType(field, model, context);
 }
 
 function renderBaseColumnType(
   field: ScalarFieldDefinition,
   model: ModelDefinition,
-  provider: SupportedProvider,
   context: RenderContext
 ): string {
   if (shouldRenderNamedEnumColumn(field)) {
     const resolvedType = resolveTypeName(field.prismaType, context);
     const args = [`${resolvedType}`, `name=${quotePythonString(field.prismaType)}`];
-    if (provider === "postgresql" && model.tableSchema) {
+    if (model.tableSchema) {
       args.push(`schema=${quotePythonString(model.tableSchema)}`);
     }
     return `SAEnum(${args.join(", ")})`;
   }
 
+  if (field.nativeType?.name === "Json") {
+    return "JSON()";
+  }
+
   if (field.prismaType === "Json") {
-    return provider === "postgresql" ? "JSONB" : "JSON";
+    return "JSONB";
   }
 
   if (field.nativeType) {
-    return provider === "postgresql"
-      ? renderNamedType(mapPostgresType(field.nativeType))
-      : renderNamedType(mapMySqlType(field.nativeType));
+    return renderNamedType(mapPostgresType(field.nativeType));
   }
 
   switch (field.prismaType) {
@@ -768,6 +887,8 @@ function renderColumnDefault(
         return { column: "autoincrement=True" };
       case "uuid":
         return { field: "default_factory=uuid4" };
+      case "now_client":
+        return { field: "default_factory=lambda: datetime.now(timezone.utc)" };
       case "now":
         return { column: "server_default=func.now()" };
       case "dbgenerated":
@@ -803,7 +924,12 @@ function renderNamedType(mapping: { typeName: string; args: string[]; kwargs?: s
   return `${mapping.typeName}(${args.join(", ")})`;
 }
 
-function mapPostgresType(nativeType: NativeType): { typeName: string; args: string[]; kwargs?: string[] } {
+function mapPostgresType(nativeType: NativeType): {
+  typeName: string;
+  args: string[];
+  kwargs?: string[];
+  importName?: string;
+} {
   switch (nativeType.name) {
     case "VarChar":
       return { typeName: "VARCHAR", args: nativeType.args };
@@ -864,82 +990,14 @@ function mapPostgresType(nativeType: NativeType): { typeName: string; args: stri
     case "ByteA":
       return { typeName: "BYTEA", args: [] };
     case "Uuid":
-      return { typeName: "UUID", args: ["as_uuid=True"] };
+      // Aliased: a plain `UUID` import would shadow `uuid.UUID` used in annotations.
+      return { typeName: "PG_UUID", args: ["as_uuid=True"], importName: "UUID as PG_UUID" };
     case "Xml":
       return { typeName: "XML", args: [] };
     case "Inet":
       return { typeName: "INET", args: [] };
     case "Citext":
       return { typeName: "CITEXT", args: [] };
-    default:
-      return { typeName: nativeType.name.toUpperCase(), args: nativeType.args };
-  }
-}
-
-function mapMySqlType(nativeType: NativeType): { typeName: string; args: string[]; kwargs?: string[] } {
-  switch (nativeType.name) {
-    case "VarChar":
-      return { typeName: "VARCHAR", args: nativeType.args };
-    case "Char":
-      return { typeName: "CHAR", args: nativeType.args };
-    case "Text":
-      return { typeName: "TEXT", args: [] };
-    case "TinyText":
-      return { typeName: "TINYTEXT", args: [] };
-    case "MediumText":
-      return { typeName: "MEDIUMTEXT", args: [] };
-    case "LongText":
-      return { typeName: "LONGTEXT", args: [] };
-    case "TinyInt":
-      return { typeName: "TINYINT", args: [] };
-    case "SmallInt":
-      return { typeName: "SMALLINT", args: [] };
-    case "MediumInt":
-      return { typeName: "MEDIUMINT", args: [] };
-    case "Int":
-      return { typeName: "INTEGER", args: [] };
-    case "BigInt":
-      return { typeName: "BIGINT", args: [] };
-    case "UnsignedTinyInt":
-      return { typeName: "TINYINT", args: [], kwargs: ["unsigned=True"] };
-    case "UnsignedSmallInt":
-      return { typeName: "SMALLINT", args: [], kwargs: ["unsigned=True"] };
-    case "UnsignedMediumInt":
-      return { typeName: "MEDIUMINT", args: [], kwargs: ["unsigned=True"] };
-    case "UnsignedInt":
-      return { typeName: "INTEGER", args: [], kwargs: ["unsigned=True"] };
-    case "UnsignedBigInt":
-      return { typeName: "BIGINT", args: [], kwargs: ["unsigned=True"] };
-    case "Decimal":
-      return { typeName: "DECIMAL", args: nativeType.args };
-    case "Float":
-      return { typeName: "FLOAT", args: [] };
-    case "Double":
-      return { typeName: "DOUBLE", args: [] };
-    case "DateTime":
-      return { typeName: "DATETIME", args: nativeType.args };
-    case "Timestamp":
-      return { typeName: "TIMESTAMP", args: nativeType.args };
-    case "Date":
-      return { typeName: "DATE", args: [] };
-    case "Time":
-      return { typeName: "TIME", args: [] };
-    case "Year":
-      return { typeName: "YEAR", args: [] };
-    case "Json":
-      return { typeName: "JSON", args: [] };
-    case "Binary":
-      return { typeName: "BINARY", args: nativeType.args };
-    case "VarBinary":
-      return { typeName: "VARBINARY", args: nativeType.args };
-    case "TinyBlob":
-      return { typeName: "TINYBLOB", args: [] };
-    case "Blob":
-      return { typeName: "BLOB", args: [] };
-    case "MediumBlob":
-      return { typeName: "MEDIUMBLOB", args: [] };
-    case "LongBlob":
-      return { typeName: "LONGBLOB", args: [] };
     default:
       return { typeName: nativeType.name.toUpperCase(), args: nativeType.args };
   }
@@ -980,10 +1038,6 @@ function shouldRenderNamedEnumColumn(field: ScalarFieldDefinition): boolean {
   );
 }
 
-function normalizeConstraintFields(fields: LegacyConstraintField[]): ConstraintFieldDefinition[] {
-  return fields.map((field) => (typeof field === "string" ? { name: field } : field));
-}
-
 function getForeignKeyFields(
   foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
 ): string[] {
@@ -991,39 +1045,15 @@ function getForeignKeyFields(
     return [];
   }
 
-  if ("fields" in foreignKey && Array.isArray(foreignKey.fields)) {
-    return foreignKey.fields;
-  }
-
-  const legacyField = (foreignKey as { field?: string }).field;
-  return typeof legacyField === "string" ? [legacyField] : [];
+  return foreignKey.fields;
 }
 
-function getForeignKeyTargetFields(
-  foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
-): string[] {
-  /* v8 ignore next 3 -- defensive guard for legacy/internal helper calls */
-  if (!foreignKey) {
-    return [];
-  }
-
-  if ("targetFields" in foreignKey && Array.isArray(foreignKey.targetFields)) {
-    return foreignKey.targetFields;
-  }
-
-  /* v8 ignore next 3 -- malformed legacy helper input */
-  const legacyTargetField = (foreignKey as { targetField?: string }).targetField;
-  /* v8 ignore next -- malformed legacy helper input */
-  return typeof legacyTargetField === "string" ? [legacyTargetField] : [];
+function getForeignKeyTargetFields(foreignKey: ForeignKeyDefinition): string[] {
+  return foreignKey.targetFields;
 }
 
 function getForeignKeyFieldCount(
   foreignKey: ScalarFieldDefinition["foreignKey"] | ForeignKeyDefinition | undefined
 ): number {
-  const explicitFields = getForeignKeyFields(foreignKey);
-  if (explicitFields.length > 0) {
-    return explicitFields.length;
-  }
-  const legacyTargetField = (foreignKey as { targetField?: string } | undefined)?.targetField;
-  return typeof legacyTargetField === "string" ? 1 : 0;
+  return getForeignKeyFields(foreignKey).length;
 }
