@@ -52,18 +52,6 @@ export function quotePythonString(value: string): string {
   return `'${escapePythonString(value)}'`;
 }
 
-export function normalizeStringLiteral(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  if (value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1);
-  }
-
-  return value;
-}
-
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

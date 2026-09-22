@@ -7,9 +7,8 @@ const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.met
 
 export default defineConfig({
   entry: {
-    bin: "src/bin.ts",
-    cli: "src/cli.ts",
-    generator: "src/generator.ts"
+    index: "src/index.ts",
+    cli: "src/cli.ts"
   },
   define: {
     "process.env.PRISMA_SQLMODEL_GEN_PACKAGE_VERSION": JSON.stringify(packageJson.version)

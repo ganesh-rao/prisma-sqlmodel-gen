@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export async function writeManagedFile(filePath: string, contents: string): Promise<void> {
@@ -19,8 +19,4 @@ export async function ensureInitFile(dirPath: string, moduleName: string): Promi
 export async function checkManagedFile(filePath: string, expectedContents: string): Promise<boolean> {
   const current = await readFile(filePath, "utf8").catch(() => null);
   return current === expectedContents;
-}
-
-export async function removeFileIfExists(filePath: string): Promise<void> {
-  await rm(filePath, { force: true });
 }

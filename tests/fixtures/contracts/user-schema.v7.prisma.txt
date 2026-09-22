@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+generator sqlmodel {
+  provider            = "prisma-sqlmodel-gen"
+  output              = "../../reporter/db/generated"
+  moduleName          = "models.py"
+  emitInit            = "true"
+  strict              = "true"
+  headerComment       = "true"
+  sqlmodelImportStyle = "sqlmodel"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Article {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt  DateTime  @map("created_at") @db.Timestamp(6)
+  updatedAt  DateTime  @map("updated_at") @db.Timestamp(6)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamp(6)
+  companyId  BigInt    @map("company_id")
+  filingId   BigInt    @map("filing_id")
+  title      String
+  content    Json
+  fullPrompt Json      @map("fullPrompt")
+  authors    Json
+  editors    Json
+  old_id     BigInt?
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  filing     Filing    @relation(fields: [filingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([authors], map: "pgarticle_authors", type: Gin)
+  @@index([companyId], map: "pgarticle_company_id")
+  @@index([companyId, createdAt(sort: Desc)], map: "pgarticle_company_created_at_desc")
+  @@index([content], map: "pgarticle_content", type: Gin)
+  @@index([createdAt(sort: Desc)], map: "pgarticle_created_at_desc")
+  @@index([editors], map: "pgarticle_editors", type: Gin)
+  @@index([filingId], map: "pgarticle_filing_id")
+  @@index([fullPrompt], map: "pgarticle_fullPrompt", type: Gin)
+  @@index([old_id], map: "pgarticle_old_id")
+  @@map("article")
+}
+
+model Company {
+  id              BigInt    @id @default(autoincrement())
+  createdAt       DateTime  @map("created_at") @db.Timestamp(6)
+  updatedAt       DateTime  @map("updated_at") @db.Timestamp(6)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamp(6)
+  ticker          String?   @unique(map: "pgcompany_ticker") @db.VarChar(255)
+  name            String    @db.VarChar(255)
+  website         String?   @db.VarChar(255)
+  isin            String    @unique(map: "pgcompany_isin") @db.VarChar(255)
+  lei             String?   @unique(map: "pgcompany_lei") @db.VarChar(255)
+  ric             String?   @unique(map: "pgcompany_ric") @db.VarChar(255)
+  primaryExchange String?   @map("primary_exchange") @db.VarChar(255)
+  country         String?   @db.VarChar(255)
+  currency        String?   @db.VarChar(255)
+  functionData    Json?     @map("function")
+  prompt          String?
+  articles        Article[]
+  filings         Filing[]
+
+  @@index([functionData], map: "pgcompany_function", type: Gin)
+  @@map("company")
+}
+
+model Filing {
+  id         BigInt    @id @default(autoincrement())
+  createdAt  DateTime  @map("created_at") @db.Timestamp(6)
+  updatedAt  DateTime  @map("updated_at") @db.Timestamp(6)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamp(6)
+  companyId  BigInt    @map("company_id")
+  title      String    @db.VarChar(255)
+  fileHash   String?   @map("filehash")
+  data       Json
+  filingDate DateTime  @map("filing_date") @db.Date
+  sourceUrl  String    @unique(map: "pgfiling_source_url") @map("source_url")
+  status     String    @db.VarChar(255)
+  old_id     BigInt?
+  articles   Article[]
+  chunks     FilingChunk[]
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([companyId], map: "pgfiling_company_id")
+  @@index([companyId, filingDate(sort: Desc), id(sort: Desc)], map: "pgfiling_company_filing_date_id_desc")
+  @@index([data], map: "pgfiling_data", type: Gin)
+  @@map("filing")
+}
+
+model FilingChunk {
+  id         BigInt    @id @default(autoincrement())
+  createdAt  DateTime  @map("created_at") @db.Timestamp(6)
+  updatedAt  DateTime  @map("updated_at") @db.Timestamp(6)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamp(6)
+  filingId   BigInt    @map("filing_id")
+  ordinal    Int
+  kind       String    @db.VarChar(32)
+  text       String
+  searchText String    @map("search_text")
+  tokenCount Int       @map("token_count")
+  startIndex Int?      @map("start_index")
+  endIndex   Int?      @map("end_index")
+  chunkHash  String    @unique(map: "pgfilingchunk_chunk_hash") @map("chunk_hash") @db.VarChar(64)
+  data       Json?
+  filing     Filing    @relation(fields: [filingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([filingId], map: "pgfilingchunk_filing_id")
+  @@unique([filingId, kind, ordinal], map: "pgfilingchunk_filing_kind_ordinal")
+  @@map("filing_chunk")
+}

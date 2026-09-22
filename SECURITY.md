@@ -17,11 +17,9 @@ Include:
 
 ## Dependency advisories
 
-As of the initial open-source release, `npm audit` reports unresolved advisories in transitive dependencies:
+As of 2.0.0, the package ships zero runtime dependencies, so there is no runtime transitive audit surface. The remaining `npm audit` scope is dev-only (TypeScript, Vitest, tsup); review it before each release.
 
-- `@mrleebo/prisma-ast` pulls in a vulnerable `chevrotain` / `lodash-es` chain
-- current npm registry data does not provide a clean upgrade path beyond the latest published `@mrleebo/prisma-ast`
-- Prisma-related audit entries currently point to semver-incompatible downgrade suggestions and should be reviewed manually before acting on them
+Earlier advisories in `@mrleebo/prisma-ast` (`chevrotain` / `lodash-es` chain) and Prisma-related entries no longer apply: those dependencies were removed with the v7 frontend.
 
 Current project posture:
 

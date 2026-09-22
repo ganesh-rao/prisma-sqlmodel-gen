@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { collectCompatibilityDiagnostics } from "./compatibility.js";
+import { parseContractDocument, type ContractDocument } from "./contract.js";
 import { DiagnosticError } from "./diagnostics.js";
 import { ensureInitFile, writeManagedFile, checkManagedFile } from "./fs.js";
-import { buildSchemaDefinition } from "./normalize.js";
-import { extractAstMetadata } from "./prisma-ast.js";
+import { buildSchemaDefinitionFromContract } from "./normalize-contract.js";
 import { renderPythonModule } from "./render-python.js";
-import type { Diagnostic, GenerateResult, GeneratorInput, SchemaDefinition } from "./types.js";
+import type {
+  ContractGeneratorInput,
+  Diagnostic,
+  GenerateResult,
+  SchemaDefinition
+} from "./types.js";
 import { PACKAGE_VERSION } from "./version.js";
 
-export async function generateSqlModel(input: GeneratorInput): Promise<GenerateResult> {
-  const { diagnostics, renderedModule } = analyzeGeneratorInput(input);
+export async function generateSqlModel(input: ContractGeneratorInput): Promise<GenerateResult> {
+  const { diagnostics, renderedModule } = analyzeContractInput(input);
   const modulePath = getModulePath(input);
   await writeManagedFile(modulePath, renderedModule);
   const files = [modulePath];
@@ -25,8 +29,10 @@ export async function generateSqlModel(input: GeneratorInput): Promise<GenerateR
   };
 }
 
-export async function checkSqlModelGeneration(input: GeneratorInput): Promise<GenerateResult> {
-  const { diagnostics, renderedModule } = analyzeGeneratorInput(input);
+export async function checkSqlModelGeneration(
+  input: ContractGeneratorInput
+): Promise<GenerateResult> {
+  const { diagnostics, renderedModule } = analyzeContractInput(input);
   const modulePath = getModulePath(input);
   const matches = await checkManagedFile(modulePath, renderedModule);
   if (!matches) {
@@ -68,21 +74,25 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function analyzeGeneratorInput(input: GeneratorInput): {
+function analyzeContractInput(input: ContractGeneratorInput): {
   diagnostics: Diagnostic[];
   definition: SchemaDefinition;
   renderedModule: string;
 } {
-  const dmmf = input.dmmf as any;
-  const metadata = extractAstMetadata(input.datamodel, dmmf);
-  const diagnostics = collectCompatibilityDiagnostics(dmmf, metadata, input.config.strict);
+  const parsed = parseContractDocument(input.contractText);
+  assertNoErrorDiagnostics(parsed.diagnostics);
+  // parseContractDocument returns a document whenever diagnostics hold no errors.
+  const built = buildSchemaDefinitionFromContract(
+    parsed.document as ContractDocument,
+    input.config.strict
+  );
+  const diagnostics = [...parsed.diagnostics, ...built.diagnostics];
   assertNoErrorDiagnostics(diagnostics);
 
-  const definition = buildSchemaDefinition(dmmf, metadata);
   return {
     diagnostics,
-    definition,
-    renderedModule: renderManagedModule(input, definition)
+    definition: built.definition,
+    renderedModule: renderManagedModule(input, built.definition)
   };
 }
 
@@ -92,7 +102,10 @@ function assertNoErrorDiagnostics(diagnostics: Diagnostic[]): void {
   }
 }
 
-function renderManagedModule(input: GeneratorInput, definition: SchemaDefinition): string {
+function renderManagedModule(
+  input: Pick<ContractGeneratorInput, "config">,
+  definition: SchemaDefinition
+): string {
   return renderPythonModule(definition, {
     moduleName: input.config.moduleName,
     headerComment: input.config.headerComment,
@@ -101,7 +114,7 @@ function renderManagedModule(input: GeneratorInput, definition: SchemaDefinition
   });
 }
 
-function getModulePath(input: GeneratorInput): string {
+function getModulePath(input: Pick<ContractGeneratorInput, "config" | "outputDir">): string {
   return path.join(input.outputDir, input.config.moduleName);
 }
 
